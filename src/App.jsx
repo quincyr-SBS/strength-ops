@@ -480,7 +480,7 @@ function nutStatus(actual, target) {
 
 export default function App() {
   const [tab, setTab]         = useState("program");
-  const [oura, setOura]       = useState(initOura);
+  const { oura, setManualOverride } = useOuraSync();
   const [ouraInput, setOuraInput] = useState({...initOura});
   const [showOuraForm, setShowOuraForm] = useState(false);
   const [selDay, setSelDay]   = useState(todayKey());
