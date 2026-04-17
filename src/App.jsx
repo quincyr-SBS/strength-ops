@@ -567,8 +567,8 @@ export default function App() {
         i===newMsgs.length-2 ? {role:"user",content:ctx} : {role:m.role,content:m.content}
       );
       const res = await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1000, system:SYSTEM_PROMPT, messages:apiMsgs })
+        method:"POST", headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01","x-api-key":import.meta.env.VITE_ANTHROPIC_API_KEY},
+        body:JSON.stringify({ model:"claude-opus-4-7", max_tokens:1000, system:SYSTEM_PROMPT, messages:apiMsgs })
       });
       const data = await res.json();
       setMessages(prev=>[...prev,{role:"assistant",content:data.content?.map(b=>b.text||"").join("")||"No response."}]);
@@ -919,9 +919,9 @@ export default function App() {
                   setPhotoLoading(true);
                   try {
                     const res = await fetch("https://api.anthropic.com/v1/messages",{
-                      method:"POST", headers:{"Content-Type":"application/json"},
+                      method:"POST", headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01","x-api-key":import.meta.env.VITE_ANTHROPIC_API_KEY},
                       body:JSON.stringify({
-                        model:"claude-sonnet-4-20250514", max_tokens:400,
+                        model:"claude-opus-4-7", max_tokens:400,
                         system:`You are a nutrition data extractor. Given a meal description, return ONLY valid JSON with no markdown, no explanation — just the object:
 {"name":"meal name","cal":number,"protein":number,"sodium":number,"fat":number,"carbs":number}
 Estimate reasonable values if exact amounts unknown. sodium in mg, all others in grams except cal.`,
