@@ -22,6 +22,19 @@ const TIER_CONFIG = {
   RECOVERY: { label:"RECOVERY ONLY", range:"READINESS < 70",  color:"#f87171", bg:"rgba(248,113,113,0.08)", border:"#f87171",  desc:"Zone 2 walk, mobility, McGill Big 3. No loading." },
 };
 
+const OURA_SOURCE_LABEL = {
+  oura:             "LIVE",
+  cache:            "CACHE",
+  manual_override:  "MANUAL",
+  manual:           "FALLBACK",
+};
+const OURA_SOURCE_COLOR = {
+  oura:             "#4ade80",
+  cache:            "#facc15",
+  manual_override:  "#6aaa6a",
+  manual:           "#f87171",
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PERIODIZED PROGRAM — 8-week block
 // Structure per exercise: { id, name, cue, weeks: { [wk]: { sets, reps, load, rpe, note } } }
@@ -480,7 +493,7 @@ function nutStatus(actual, target) {
 
 export default function App() {
   const [tab, setTab]         = useState("program");
-  const { oura, setManualOverride } = useOuraSync();
+  const { oura, setManualOverride, error: ouraError, loading: ouraLoading, refresh: refreshOura } = useOuraSync();
   const [ouraInput, setOuraInput] = useState({...initOura});
   const [showOuraForm, setShowOuraForm] = useState(false);
   const [selDay, setSelDay]   = useState(todayKey());
@@ -606,11 +619,22 @@ export default function App() {
             <div style={{fontSize:7,color:"#6aaa6a",letterSpacing:2}}>STATUS</div>
             <div style={{color:tcfg.color,fontSize:11,fontWeight:"bold",letterSpacing:2}}>{tcfg.label}</div>
             <div style={{color:"#4a6a4a",fontSize:7,letterSpacing:1,marginTop:1}}>R:{oura.readiness} HRV:{oura.hrv} RHR:{oura.rhr}</div>
+            <div style={{fontSize:7,letterSpacing:2,marginTop:2,color:OURA_SOURCE_COLOR[oura.source]||"#4a6a4a"}}>
+              SRC:{OURA_SOURCE_LABEL[oura.source]||String(oura.source||"?").toUpperCase()}
+            </div>
           </div>
         </div>
       </header>
 
       {/* ALERTS */}
+      {ouraError && (
+        <div style={{background:"rgba(248,113,113,0.08)",borderBottom:"1px solid #3a1a1a",padding:"4px 18px",fontSize:9,color:"#f87171",letterSpacing:1,display:"flex",gap:10,alignItems:"center",justifyContent:"space-between"}}>
+          <span>⚠ OURA SYNC FAILED: {ouraError} — showing {OURA_SOURCE_LABEL[oura.source]||oura.source} data</span>
+          <button onClick={refreshOura} disabled={ouraLoading} style={{background:"transparent",border:"1px solid #f87171",color:"#f87171",padding:"2px 8px",cursor:ouraLoading?"default":"pointer",fontSize:8,letterSpacing:2,...MONO}}>
+            {ouraLoading?"…":"RETRY"}
+          </button>
+        </div>
+      )}
       {(hrvAlert||rhrAlert) && (
         <div style={{background:"#0a0a0a",borderBottom:"1px solid #3a1a1a"}}>
           {[hrvAlert,rhrAlert].filter(Boolean).map((a,i)=>(

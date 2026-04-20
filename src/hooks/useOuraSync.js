@@ -89,7 +89,15 @@ export function useOuraSync() {
 
   // Manual override — merges on top of live data
   const setManualOverride = useCallback((overrides) => {
-    setOura(prev => ({ ...prev, ...overrides, source: "manual_override" }));
+    setOura(prev => {
+      const next = { ...prev, ...overrides, source: "manual_override" };
+      // Persist to cache so manual values survive reload
+      try {
+        localStorage.setItem(LS_CACHE, JSON.stringify(next));
+        localStorage.setItem(LS_CACHE_TS, String(Date.now()));
+      } catch {}
+      return next;
+    });
     // Persist baseline separately so it survives re-syncs
     if (overrides.rhrBaseline !== undefined) {
       localStorage.setItem(LS_BASELINE, String(overrides.rhrBaseline));
