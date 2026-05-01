@@ -40,6 +40,52 @@ const OURA_SOURCE_COLOR = {
 // Structure per exercise: { id, name, cue, weeks: { [wk]: { sets, reps, load, rpe, note } } }
 // load = string (human-readable), loadNum = number for scaling
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// MIGRATION PLAN — criteria-gated progression (will replace wb() week-driven model)
+// Targets: DL 550 / SQ 450 / DB bench 150 / OHP 150 / curl 80+
+// Constraints: back injury recovery, shoulder issues, longevity > speed
+//
+// Old shape: weeks: wb(w1..w8) — calendar-driven, fixed 8 weeks
+// New shape per exercise:
+//   progression: [
+//     { sets, reps, load, loadNum, rpe, gate: { type, ... } },
+//     ...
+//   ]
+//   // currentStepIdx tracked in sessionData (per-exercise), persisted
+//
+// Gate types (advance to next step only when gate clears):
+//   RPE_BELOW       — top-set RPE ≤ N for K consecutive sessions
+//                     { type:"RPE_BELOW", rpe:7, sessions:2 }      // accessories
+//   RPE_PAIN        — RPE_BELOW + relevant pain ≤ N over same window
+//                     { type:"RPE_PAIN", rpe:7.5, pain:2, sessions:3 } // heavy compounds
+//   PAIN_FREE_WEEKS — N consecutive weeks at top load, pain ≤ threshold
+//                     { type:"PAIN_FREE_WEEKS", weeks:4, pain:2 }  // phase transitions
+//
+// Macro cycle: open-ended, gate-based — NOT calendar-based
+//   BLOCK_A (current): trap-bar high-handle DL, goblet box squat, DB bench/OHP
+//   BLOCK_B (gated):   + SSB squat (RPE 6 start), seated BB OHP,
+//                      + BB curl, hammer curl, shoulder prehab (Cuban, Y-T-W, ER)
+//   BLOCK_C (gated):   conventional/sumo from blocks, standing strict press
+//   BLOCK_D (gated):   peaking — wave loading, lower volume
+//   Block transition gate: PAIN_FREE_WEEKS at top load of prior block + mobility prereqs
+//
+// Auto-deload triggers (orthogonal to gates):
+//   - HRV down 3+ ms vs 7d avg for 3 consecutive days
+//   - Readiness < 70 for 4 consecutive days
+//   - 2 missed gate attempts in a row on any heavy compound
+//   - Soft suggestion every 6–8 weeks if none of the above fired
+//
+// Saturday revision (light volume / movement-quality day, not a 4th lift day):
+//   DROP: trap-bar Sat, DB bench Sat, cable row Sat, Pallof Sat
+//   KEEP: light carries (50% of Fri load), upper-back (band pull-apart or face pull),
+//         McGill Big 3, 30 min Z2 walk
+//
+// UI (inline progress in Program tab — no new tab):
+//   ExerciseCard shows "STEP 3/7 — 1/2 sessions cleared at RPE 6.5, pain 1/10"
+//   Block badge replaces WEEK_LABELS calendar header
+//   Phase-transition gates render as locked steps with prereq checklist
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Helper: build week entries across 4-week base block + deload + intensification
 function wb(w1, w2, w3, w4, w5deload, w6, w7, w8) {
