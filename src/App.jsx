@@ -1,5 +1,12 @@
 import { useState, useRef, useEffect } from "react";
 import { useOuraSync } from "./hooks/useOuraSync";
+import {
+  BLOCK_RANK, BLOCK_CONFIG, BLOCK_TRANSITION_ANCHORS, blockLabel,
+  G, S,
+  evaluateGate, getStepState, findExerciseById, isBlockTransitionReady,
+  getVisibleExercises, getLockedPreview, evaluateDeloadTriggers,
+  scaleLoad,
+} from "./program";
 // ─────────────────────────────────────────────────────────────────────────────
 // SYSTEM PROMPT
 // ─────────────────────────────────────────────────────────────────────────────
@@ -52,28 +59,8 @@ const OURA_SOURCE_COLOR = {
 //
 // Targets: DL 550 / SQ 450 / DB bench 150 / OHP 150 / curl 80+
 // Constraints: back injury recovery, shoulder issues. Longevity > speed.
+// Pure helpers (BLOCK_*, G, S, evaluateGate, etc.) live in ./program.js
 // ─────────────────────────────────────────────────────────────────────────────
-const BLOCK_RANK = { A:0, B:1, C:2, D:3 };
-const BLOCK_CONFIG = {
-  A: { label:"BLOCK A — FOUNDATION",         color:"#6aaa6a", desc:"Trap-bar high handle, goblet box squat, DB bench/OHP, accessory curls. Build the base." },
-  B: { label:"BLOCK B — BARBELL TRANSITION", color:"#facc15", desc:"SSB squat, seated BB OHP, shoulder prehab. Spine ready for higher absolute loads." },
-  C: { label:"BLOCK C — STRENGTH",           color:"#fb923c", desc:"Conventional/sumo from blocks, standing strict press. Approach elite numbers." },
-  D: { label:"BLOCK D — PEAK",               color:"#ef4444", desc:"Wave loading, lower volume, peak the targets." },
-};
-// Anchor exercises — when all are at final step + final gate cleared, suggest block advance
-const BLOCK_TRANSITION_ANCHORS = {
-  A_TO_B: ["trap_bar","goblet_sq","db_bench_mon","seated_db_press"],
-  B_TO_C: ["ssb_squat","seated_bb_ohp"],
-  C_TO_D: [],
-};
-// Compact progression builders
-const G = {
-  rpe:     (rpe, sessions = 2)         => ({ type:"RPE_BELOW",       rpe, sessions }),
-  rpePain: (rpe, pain = 2, sessions=3) => ({ type:"RPE_PAIN",        rpe, pain, sessions }),
-  weeks:   (weeks, pain = 2)           => ({ type:"PAIN_FREE_WEEKS", weeks, pain }),
-  none:    ()                          => null,
-};
-const S = (sets, reps, load, loadNum, rpe, gate) => ({ sets, reps, load, loadNum, rpe, gate });
 
 const PROGRAM = {
   SUN: {
@@ -406,130 +393,14 @@ const PROGRAM = {
 const DAY_ORDER = ["SUN","MON","TUE","WED","THU","FRI","SAT"];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HELPERS
+// REACT-LAYER HELPERS (impure / DOM-aware)
+// Pure helpers (evaluateGate, getVisibleExercises, etc.) live in ./program.js
 // ─────────────────────────────────────────────────────────────────────────────
 function getTier(r){ return r>=85?"HARD":r>=70?"MODERATE":"RECOVERY"; }
 function getHRVAlert(avg,today){ if(!avg||!today)return null; const d=avg-today; return d>=3?`HRV DOWN ${d}MS VS 7-DAY — CUT VOLUME`:null; }
 function getRHRAlert(base,today){ if(!base||!today)return null; const r=today-base; return r>=5?`RHR +${r} BPM ABOVE BASELINE — ZONE 2 OR REST`:null; }
 function todayKey(){ return DAY_ORDER[new Date().getDay()]; }
 
-// Scale load string for MODERATE tier (80%) — only numeric standalone loads
-function scaleLoad(load, mult) {
-  if (mult === 1.0) return load;
-  return load.replace(/(\d+)/g, (m) => Math.round(parseInt(m)*mult/5)*5);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GATE EVALUATOR — pure
-// ─────────────────────────────────────────────────────────────────────────────
-function isoWeekKey(dateStr){
-  const d = new Date(dateStr + "T00:00:00");
-  d.setUTCHours(0,0,0,0);
-  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
-  const yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1));
-  const weekNo = Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
-  return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2,"0")}`;
-}
-
-function evaluateGate(gate, stepHistory){
-  if (!gate) return { cleared:false, progress:"—", note:"maintenance — no progression gate" };
-  const completed = (stepHistory||[]).filter(h => h.completed);
-  if (gate.type === "RPE_BELOW"){
-    const need   = gate.sessions;
-    const lastN  = completed.slice(-need);
-    const pass   = lastN.filter(h => (h.topRPE ?? 99) <= gate.rpe).length;
-    const cleared= lastN.length >= need && pass === need;
-    return { cleared, progress:`${pass}/${need}`, note:`top-set RPE ≤ ${gate.rpe} for ${need} sessions` };
-  }
-  if (gate.type === "RPE_PAIN"){
-    const need   = gate.sessions;
-    const lastN  = completed.slice(-need);
-    const pass   = lastN.filter(h =>
-      (h.topRPE ?? 99) <= gate.rpe &&
-      (h.painBack ?? 99) <= gate.pain &&
-      (h.painShoulder ?? 99) <= gate.pain
-    ).length;
-    const cleared= lastN.length >= need && pass === need;
-    return { cleared, progress:`${pass}/${need}`, note:`RPE ≤ ${gate.rpe} + pain ≤ ${gate.pain}/10 × ${need}` };
-  }
-  if (gate.type === "PAIN_FREE_WEEKS"){
-    const weeks = new Set();
-    for (const h of completed){
-      if ((h.painBack ?? 99) > gate.pain) continue;
-      if ((h.painShoulder ?? 99) > gate.pain) continue;
-      weeks.add(isoWeekKey(h.date));
-    }
-    const cleared = weeks.size >= gate.weeks;
-    return { cleared, progress:`${Math.min(weeks.size, gate.weeks)}/${gate.weeks}`, note:`${gate.weeks} pain-free weeks (pain ≤ ${gate.pain}/10) — phase transition` };
-  }
-  return { cleared:false, progress:"?", note:"unknown gate type" };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// STEP STATE + BLOCK DERIVATION
-// stepState shape: { [exId]: { stepIdx:int, history:[{date,stepIdx,topRPE,painBack,painShoulder,completed:true}] } }
-// ─────────────────────────────────────────────────────────────────────────────
-function getStepState(stepState, exId){
-  return stepState[exId] || { stepIdx:0, history:[] };
-}
-function findExerciseById(program, id){
-  for (const dk of Object.keys(program)){
-    const ex = (program[dk].exercises||[]).find(e => e.id === id);
-    if (ex) return ex;
-  }
-  return null;
-}
-function isBlockTransitionReady(stepState, program, anchorIds){
-  if (!anchorIds || anchorIds.length === 0) return false;
-  for (const exId of anchorIds){
-    const ex = findExerciseById(program, exId);
-    if (!ex) return false;
-    const st = getStepState(stepState, exId);
-    if (st.stepIdx < ex.progression.length - 1) return false;
-    const finalGate = ex.progression[ex.progression.length - 1].gate;
-    const res = evaluateGate(finalGate, st.history.filter(h => h.stepIdx === st.stepIdx));
-    if (!res.cleared) return false;
-  }
-  return true;
-}
-function getVisibleExercises(dayExercises, currentBlock){
-  const cur = BLOCK_RANK[currentBlock];
-  return (dayExercises||[]).filter(ex => {
-    const r = BLOCK_RANK[ex.block];
-    if (r > cur) return false;
-    if (r < cur){
-      // Older-block exercise — hidden if a current-block exercise replaces it
-      return !dayExercises.some(o => BLOCK_RANK[o.block] === cur && o.replaces === ex.id);
-    }
-    return true;
-  });
-}
-function getLockedPreview(dayExercises, currentBlock){
-  const cur = BLOCK_RANK[currentBlock];
-  return (dayExercises||[]).filter(ex => BLOCK_RANK[ex.block] === cur + 1);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// AUTO-DELOAD TRIGGERS
-// ─────────────────────────────────────────────────────────────────────────────
-function evaluateDeloadTriggers(readinessHistory){
-  const triggers = [];
-  const h = readinessHistory || [];
-  if (h.length >= 4){
-    const last4 = h.slice(-4);
-    if (last4.every(d => Number(d.readiness) < 70)) triggers.push("Readiness <70 × 4 days — deload");
-  }
-  if (h.length >= 3){
-    const last3 = h.slice(-3);
-    if (last3.every(d => d.hrv && d.hrv7day && (Number(d.hrv7day) - Number(d.hrv)) >= 3))
-      triggers.push("HRV ↓ 3+ ms vs 7d avg × 3 days — deload");
-  }
-  return triggers;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// LOCALSTORAGE HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
 const LS_STEP_STATE         = "sqb_step_state";
 const LS_CURRENT_BLOCK      = "sqb_current_block";
 const LS_READINESS_HISTORY  = "sqb_readiness_history";
@@ -637,22 +508,27 @@ function ExerciseCard({ ex, exState, mult, painBack, painShoulder, data, onSetUp
 
           {/* Session-complete: top-set RPE + log session */}
           {allDone && step.gate && !sessionLogged && (
-            <div style={{padding:"8px 12px",borderTop:"1px solid #1a2a1a",background:"#0a1a0a",display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap"}}>
-              <div style={{flex:"1 1 130px"}}>
-                <div style={{fontSize:7,letterSpacing:2,color:"#4a6a4a",marginBottom:3,...MONO}}>TOP-SET RPE (1–10)</div>
-                <input type="number" min={1} max={10} step={0.5} value={topRPEInput}
-                  onChange={e=>onMetaUpdate("topRPE", e.target.value)}
-                  style={BASE_INPUT} placeholder="e.g. 7"/>
+            <div style={{padding:"8px 12px",borderTop:"1px solid #1a2a1a",background:"#0a1a0a"}}>
+              <div style={{display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap"}}>
+                <div style={{flex:"1 1 130px"}}>
+                  <div style={{fontSize:7,letterSpacing:2,color:"#4a6a4a",marginBottom:3,...MONO}}>TOP-SET RPE (1–10)</div>
+                  <input type="number" min={1} max={10} step={0.5} value={topRPEInput}
+                    onChange={e=>onMetaUpdate("topRPE", e.target.value)}
+                    style={BASE_INPUT} placeholder="e.g. 7"/>
+                </div>
+                <button
+                  disabled={topRPEInput === "" || mult === 0}
+                  onClick={()=>onLogSession({
+                    topRPE: Number(topRPEInput),
+                    painBack, painShoulder,
+                  })}
+                  style={{background:topRPEInput!==""?"#2d4a2d":"#1a2e1a",border:"1px solid #6aaa6a",color:"#6aaa6a",padding:"6px 14px",cursor:topRPEInput!==""?"pointer":"default",fontSize:8,letterSpacing:2,...MONO}}>
+                  LOG SESSION →
+                </button>
               </div>
-              <button
-                disabled={topRPEInput === "" || mult === 0}
-                onClick={()=>onLogSession({
-                  topRPE: Number(topRPEInput),
-                  painBack, painShoulder,
-                })}
-                style={{background:topRPEInput!==""?"#2d4a2d":"#1a2e1a",border:"1px solid #6aaa6a",color:"#6aaa6a",padding:"6px 14px",cursor:topRPEInput!==""?"pointer":"default",fontSize:8,letterSpacing:2,...MONO}}>
-                LOG SESSION →
-              </button>
+              <div style={{fontSize:8,color:"#5a7a5a",letterSpacing:1,marginTop:6,...MONO}}>
+                will stamp: back {painBack}/10 · shoulder {painShoulder}/10 — update on Readiness tab if these don't match how you felt during the session
+              </div>
             </div>
           )}
           {sessionLogged && !showAdvance && step.gate && (
@@ -724,6 +600,7 @@ export default function App() {
   const { oura, setManualOverride, error: ouraError, loading: ouraLoading, refresh: refreshOura } = useOuraSync();
   const [ouraInput, setOuraInput] = useState({...initOura});
   const [showOuraForm, setShowOuraForm] = useState(false);
+  const [showBlockConfirm, setShowBlockConfirm] = useState(false);
   const [selDay, setSelDay]   = useState(todayKey());
   const [sessionData, setSessionData] = useState({});
   const [backPain, setBackPain] = useState(0);
@@ -870,7 +747,7 @@ export default function App() {
     const userMsg = chatInput.trim();
     setChatInput("");
     const nutCtx = `[NUTRITION TODAY: ${nutTotals.cal}cal / ${nutTotals.protein}g protein / ${nutTotals.sodium}mg sodium / ${waterOz}oz water — targets: ${NUTRITION_TARGETS.cal}cal / ${NUTRITION_TARGETS.protein}g protein / ${NUTRITION_TARGETS.sodium}mg sodium / ${NUTRITION_TARGETS.water}oz — meals: ${foodLog.length>0?foodLog.map(f=>f.name).join(", "):"none logged"}]`;
-    const ctx = `[OURA: Readiness ${oura.readiness}, HRV ${oura.hrv}ms (7d avg: ${oura.hrv7day}ms), RHR ${oura.rhr}bpm (baseline: ${oura.rhrBaseline}bpm), Tier: ${tier}, Block: ${currentBlock} (${blockCfg.label}), Back Pain: ${backPain}/10, Shoulder Pain: ${shoulderPain}/10${deloadTriggers.length?`, DELOAD TRIGGERS: ${deloadTriggers.join("; ")}`:""}]\n${nutCtx}\n\n${userMsg}`;
+    const ctx = `[OURA: Readiness ${oura.readiness}, HRV ${oura.hrv}ms (7d avg: ${oura.hrv7day}ms), RHR ${oura.rhr}bpm (baseline: ${oura.rhrBaseline}bpm), Tier: ${tier}, Block: ${currentBlock} (${blockLabel(currentBlock)}), Back Pain: ${backPain}/10, Shoulder Pain: ${shoulderPain}/10${deloadTriggers.length?`, DELOAD TRIGGERS: ${deloadTriggers.join("; ")}`:""}]\n${nutCtx}\n\n${userMsg}`;
     const newMsgs = [...messages, {role:"user",content:userMsg}];
     setMessages(newMsgs);
     setChatLoading(true);
@@ -907,9 +784,9 @@ export default function App() {
             <div style={{fontSize:7,color:"#4a6a4a",letterSpacing:2,marginBottom:3}}>MACRO BLOCK</div>
             <div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
               <div style={{fontSize:14,fontWeight:"bold",color:blockCfg.color,letterSpacing:3}}>{currentBlock}</div>
-              <div style={{fontSize:7,color:"#3a5a3a",letterSpacing:1}}>{blockCfg.label.replace(/^BLOCK \w — /,"")}</div>
-              {blockAdvanceReady && nextBlock && (
-                <button onClick={()=>{ if (confirm(`Advance to Block ${nextBlock}? All anchor exercises have cleared their final-step gate.`)) setCurrentBlock(nextBlock); }}
+              <div style={{fontSize:7,color:"#3a5a3a",letterSpacing:1}}>{blockCfg.name}</div>
+              {blockAdvanceReady && nextBlock && !showBlockConfirm && (
+                <button onClick={()=>setShowBlockConfirm(true)}
                   style={{marginTop:4,background:"#1a2e1a",border:"1px solid #4ade80",color:"#4ade80",padding:"3px 8px",cursor:"pointer",fontSize:7,letterSpacing:2,...MONO}}>
                   ▲ ADVANCE → {nextBlock}
                 </button>
@@ -948,9 +825,32 @@ export default function App() {
           {deloadTriggers.map((t,i) => <div key={i}>⚠ AUTO-DELOAD TRIGGER: {t}</div>)}
         </div>
       )}
-      {blockAdvanceReady && nextBlock && (
+      {blockAdvanceReady && nextBlock && !showBlockConfirm && (
         <div style={{background:"rgba(74,222,128,0.04)",borderBottom:"1px solid #2d4a2d",padding:"4px 18px",fontSize:9,color:"#4ade80",letterSpacing:2}}>
           ✓ BLOCK {currentBlock} ANCHORS CLEARED — READY TO ADVANCE TO BLOCK {nextBlock}. Use header button when you're ready.
+        </div>
+      )}
+      {showBlockConfirm && nextBlock && (
+        <div style={{background:"#0d130d",borderBottom:"1px solid #2d4a2d",padding:"10px 18px",...MONO}}>
+          <div style={{fontSize:9,color:"#4ade80",letterSpacing:2,marginBottom:6}}>
+            CONFIRM BLOCK ADVANCE: {currentBlock} → {nextBlock}
+          </div>
+          <div style={{fontSize:9,color:"#7a9a7a",marginBottom:5}}>
+            Anchors cleared: {transitionAnchors.join(", ")}
+          </div>
+          <div style={{fontSize:9,color:"#9aba9a",marginBottom:8}}>
+            BLOCK {nextBlock} — {BLOCK_CONFIG[nextBlock].name}: {BLOCK_CONFIG[nextBlock].desc}
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={()=>{ setCurrentBlock(nextBlock); setShowBlockConfirm(false); }}
+              style={{background:"#1a2e1a",border:"1px solid #4ade80",color:"#4ade80",padding:"5px 14px",cursor:"pointer",fontSize:8,letterSpacing:3,...MONO}}>
+              ▲ CONFIRM ADVANCE
+            </button>
+            <button onClick={()=>setShowBlockConfirm(false)}
+              style={{background:"transparent",border:"1px solid #2d4a2d",color:"#4a6a4a",padding:"5px 14px",cursor:"pointer",fontSize:8,letterSpacing:3,...MONO}}>
+              CANCEL
+            </button>
+          </div>
         </div>
       )}
 
@@ -1044,7 +944,7 @@ export default function App() {
                    "FULL PROGRAM — HIT YOUR NUMBERS"}
                 </span>
               </div>
-              <span style={{fontSize:9,color:blockCfg.color,letterSpacing:2,fontWeight:"bold"}}>{blockCfg.label}</span>
+              <span style={{fontSize:9,color:blockCfg.color,letterSpacing:2,fontWeight:"bold"}}>{blockLabel(currentBlock)}</span>
             </div>
 
             {/* Day tabs */}
