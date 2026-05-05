@@ -378,11 +378,11 @@ const PROGRAM = {
     exercises: [
       {
         id:"light_carry_sat", block:"A", name:"LIGHT FARMER CARRY",
-        cue:"~50% of Friday's load. Tall posture, easy steps. This is recovery, not training.",
+        cue:"~50% of Friday's load. Tall posture, easy steps. This is recovery, not training. Advance only when load truly feels light (RPE ≤5).",
         progression: [
-          S(3,1,"40 lb / hand × 30m",40,"RPE 5–6 cap", G.none()),
-          S(3,1,"50 lb / hand × 30m",50,"RPE 5–6 cap", G.none()),
-          S(3,1,"60 lb / hand × 30m",60,"RPE 5–6 cap", G.none()),
+          S(3,1,"40 lb / hand × 30m",40,"RPE 5–6 cap", G.rpe(5, 2)),
+          S(3,1,"50 lb / hand × 30m",50,"RPE 5–6 cap", G.rpe(5, 2)),
+          S(3,1,"60 lb / hand × 30m",60,"RPE 5–6 cap", G.rpe(5, 2)),
         ],
       },
       {
@@ -579,7 +579,7 @@ function SetRow({ setNum, reps, load, rpe, mult, actual, onChange }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // EXERCISE CARD
 // ─────────────────────────────────────────────────────────────────────────────
-function ExerciseCard({ ex, exState, mult, painBack, painShoulder, data, onUpdate, onLogSession, onAdvanceStep }) {
+function ExerciseCard({ ex, exState, mult, painBack, painShoulder, data, onSetUpdate, onMetaUpdate, onLogSession, onAdvanceStep }) {
   const [open, setOpen] = useState(true);
   const stepIdx   = Math.min(exState.stepIdx, ex.progression.length - 1);
   const step      = ex.progression[stepIdx];
@@ -632,7 +632,7 @@ function ExerciseCard({ ex, exState, mult, painBack, painShoulder, data, onUpdat
           </div>
           {rows.map(i=>(
             <SetRow key={i} setNum={i+1} reps={step.reps} load={step.load} rpe={step.rpe} mult={mult}
-              actual={data[i]} onChange={v=>onUpdate(i,v)} />
+              actual={data[i]} onChange={v=>onSetUpdate(i,v)} />
           ))}
 
           {/* Session-complete: top-set RPE + log session */}
@@ -641,7 +641,7 @@ function ExerciseCard({ ex, exState, mult, painBack, painShoulder, data, onUpdat
               <div style={{flex:"1 1 130px"}}>
                 <div style={{fontSize:7,letterSpacing:2,color:"#4a6a4a",marginBottom:3,...MONO}}>TOP-SET RPE (1–10)</div>
                 <input type="number" min={1} max={10} step={0.5} value={topRPEInput}
-                  onChange={e=>onUpdate("topRPE", e.target.value)}
+                  onChange={e=>onMetaUpdate("topRPE", e.target.value)}
                   style={BASE_INPUT} placeholder="e.g. 7"/>
               </div>
               <button
@@ -1119,22 +1119,21 @@ export default function App() {
                 {tier==="RECOVERY"&&<div style={{fontSize:8,color:"#f87171",letterSpacing:1,marginBottom:8,padding:"5px 9px",background:"rgba(248,113,113,0.05)",border:"1px solid rgba(248,113,113,0.15)"}}>✕ RECOVERY DAY — NO LOADING. ZONE 2 CARDIO AND MCGILL BIG 3 ONLY.</div>}
 
                 {/* Exercises — visible (unlocked) */}
-                {tier!=="RECOVERY"&&getVisibleExercises(day.exercises, currentBlock).map(ex=>{
-                  const rawData = (sessionData[selDay]||{})[ex.id]||{};
-                  return (
-                    <ExerciseCard key={ex.id} ex={ex}
-                      exState={getStepState(stepState, ex.id)}
-                      mult={mult} painBack={backPain} painShoulder={shoulderPain}
-                      data={rawData}
-                      onUpdate={(si,val)=> typeof si === "number"
-                        ? updateSet(selDay, ex.id, si, val)
-                        : setSessionData(prev=>({...prev,[selDay]:{...(prev[selDay]||{}),[ex.id]:{...rawData,[si]:val}}}))
-                      }
-                      onLogSession={(payload)=>logSession(ex.id, payload)}
-                      onAdvanceStep={()=>advanceStep(ex.id)}
-                    />
-                  );
-                })}
+                {tier!=="RECOVERY"&&getVisibleExercises(day.exercises, currentBlock).map(ex=>(
+                  <ExerciseCard key={ex.id} ex={ex}
+                    exState={getStepState(stepState, ex.id)}
+                    mult={mult} painBack={backPain} painShoulder={shoulderPain}
+                    data={(sessionData[selDay]||{})[ex.id]||{}}
+                    onSetUpdate={(si, val)=> updateSet(selDay, ex.id, si, val)}
+                    onMetaUpdate={(key, val)=> setSessionData(prev=>{
+                      const day = prev[selDay] || {};
+                      const exData = day[ex.id] || {};
+                      return { ...prev, [selDay]: { ...day, [ex.id]: { ...exData, [key]: val } } };
+                    })}
+                    onLogSession={(payload)=>logSession(ex.id, payload)}
+                    onAdvanceStep={()=>advanceStep(ex.id)}
+                  />
+                ))}
 
                 {/* Locked preview — upcoming block */}
                 {tier!=="RECOVERY" && getLockedPreview(day.exercises, currentBlock).length > 0 && (
