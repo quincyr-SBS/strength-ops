@@ -11,6 +11,8 @@ import {
   getVisibleExercises,
   getLockedPreview,
   scaleLoad,
+  seekStepByLoad,
+  applyCalibration,
 } from "./program.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -322,4 +324,113 @@ test("scaleLoad: rounds to nearest 5 lb at 80%", () => {
 test("scaleLoad: scales every numeric token in the string", () => {
   // Documents current behavior: /g flag scales all numbers, not just first.
   assert.equal(scaleLoad("30 lb / side × 10 reps", 0.8), "25 lb / side × 10 reps");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// seekStepByLoad
+// ─────────────────────────────────────────────────────────────────────────────
+const benchProg = [
+  S(4,8,"90 lb",  90,  "7", G.rpe(7,2)),
+  S(4,8,"100 lb", 100, "7", G.rpe(7,2)),
+  S(4,8,"110 lb", 110, "7", G.rpe(7,2)),
+  S(4,8,"120 lb", 120, "7", G.rpe(7,2)),
+];
+
+test("seekStepByLoad: exact match returns that index", () => {
+  assert.equal(seekStepByLoad(benchProg, 100), 1);
+  assert.equal(seekStepByLoad(benchProg, 120), 3);
+});
+
+test("seekStepByLoad: between steps picks the closer one", () => {
+  assert.equal(seekStepByLoad(benchProg, 103), 1); // 100 closer than 110
+  assert.equal(seekStepByLoad(benchProg, 107), 2); // 110 closer than 100
+});
+
+test("seekStepByLoad: load below first step clamps to 0", () => {
+  assert.equal(seekStepByLoad(benchProg, 50), 0);
+});
+
+test("seekStepByLoad: load above last step clamps to last", () => {
+  assert.equal(seekStepByLoad(benchProg, 200), 3);
+});
+
+test("seekStepByLoad: invalid input returns 0", () => {
+  assert.equal(seekStepByLoad(benchProg, ""),       0);
+  assert.equal(seekStepByLoad(benchProg, null),     0);
+  assert.equal(seekStepByLoad(benchProg, NaN),      0);
+  assert.equal(seekStepByLoad(benchProg, -50),      0);
+  assert.equal(seekStepByLoad([],          100),    0);
+  assert.equal(seekStepByLoad(undefined,   100),    0);
+});
+
+test("seekStepByLoad: tie picks the first (lower) step — conservative", () => {
+  // Halfway between 100 and 110: should pick 100 (more conservative starting point)
+  assert.equal(seekStepByLoad(benchProg, 105), 1);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// applyCalibration
+// ─────────────────────────────────────────────────────────────────────────────
+function makeCalProgram() {
+  return {
+    MON: { exercises: [
+      { id:"bench", block:"A", progression: benchProg },
+      { id:"curl",  block:"A", progression: [
+        S(3,10,"45 lb",45,"7", G.rpe(7,2)),
+        S(3,10,"55 lb",55,"7", G.rpe(7,2)),
+        S(3,10,"65 lb",65,"7", G.rpe(7,2)),
+      ]},
+    ]},
+  };
+}
+
+test("applyCalibration: sets stepIdx to closest step and clears that step's history", () => {
+  const program = makeCalProgram();
+  const before = {
+    bench: { stepIdx:0, history:[
+      { stepIdx:0, completed:true, topRPE:7 },
+      { stepIdx:1, completed:true, topRPE:7 },
+    ]},
+  };
+  const after = applyCalibration(before, program, { bench:110 });
+  assert.equal(after.bench.stepIdx, 2);
+  // Lower-step history preserved
+  assert.deepEqual(after.bench.history.map(h=>h.stepIdx), [0, 1]);
+});
+
+test("applyCalibration: clears history at the newly-seeked step (clean gate slate)", () => {
+  const program = makeCalProgram();
+  const before = {
+    bench: { stepIdx:1, history:[
+      { stepIdx:1, completed:true, topRPE:9 },  // would be misleading at new step
+      { stepIdx:1, completed:true, topRPE:9 },
+    ]},
+  };
+  const after = applyCalibration(before, program, { bench:100 });
+  assert.equal(after.bench.stepIdx, 1);
+  assert.deepEqual(after.bench.history, []);
+});
+
+test("applyCalibration: skips empty / blank values", () => {
+  const program = makeCalProgram();
+  const before = { bench: { stepIdx:0, history:[] } };
+  const after = applyCalibration(before, program, { bench:"", curl:null, missing:undefined });
+  assert.deepEqual(after, before);
+});
+
+test("applyCalibration: leaves uncalibrated exercises untouched", () => {
+  const program = makeCalProgram();
+  const before = {
+    bench: { stepIdx:0, history:[{ stepIdx:0, completed:true, topRPE:7 }] },
+    curl:  { stepIdx:1, history:[{ stepIdx:1, completed:true, topRPE:7 }] },
+  };
+  const after = applyCalibration(before, program, { bench:110 });
+  assert.equal(after.curl.stepIdx, 1);
+  assert.deepEqual(after.curl.history, before.curl.history);
+});
+
+test("applyCalibration: unknown exercise id is skipped (no crash)", () => {
+  const program = makeCalProgram();
+  const after = applyCalibration({}, program, { not_real:100 });
+  assert.deepEqual(after, {});
 });
