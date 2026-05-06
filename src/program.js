@@ -154,3 +154,42 @@ export function scaleLoad(load, mult) {
   if (mult === 1.0) return load;
   return load.replace(/(\d+)/g, (m) => Math.round(parseInt(m)*mult/5)*5);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CALIBRATION — seek the closest progression step to a user's current load.
+// Used when a new user enters their existing working weights so the program
+// starts where they actually are, not at step 0.
+// ─────────────────────────────────────────────────────────────────────────────
+export function seekStepByLoad(progression, targetLoad){
+  if (!progression || progression.length === 0) return 0;
+  const target = Number(targetLoad);
+  if (!Number.isFinite(target) || target <= 0) return 0;
+  let bestIdx = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < progression.length; i++){
+    const dist = Math.abs(Number(progression[i].loadNum) - target);
+    if (dist < bestDist){ bestDist = dist; bestIdx = i; }
+  }
+  return bestIdx;
+}
+
+// Apply a batch of calibrations: { [exId]: currentLoad }.
+// Returns next stepState. For each calibrated exercise, sets stepIdx to the
+// closest progression step and clears history at that step so the gate starts
+// from a clean slate. Exercises not in `calibrations` (or with empty values)
+// are left untouched.
+export function applyCalibration(stepState, program, calibrations){
+  const next = { ...stepState };
+  for (const [exId, load] of Object.entries(calibrations || {})){
+    if (load === "" || load === null || load === undefined) continue;
+    const ex = findExerciseById(program, exId);
+    if (!ex || !ex.progression) continue;
+    const newIdx = seekStepByLoad(ex.progression, load);
+    const prev = stepState[exId] || { stepIdx:0, history:[] };
+    // Drop any history at the new step so the gate restarts fresh; keep history
+    // from other steps so prior progress at lower loads remains in the record.
+    const history = (prev.history || []).filter(h => h.stepIdx !== newIdx);
+    next[exId] = { stepIdx: newIdx, history };
+  }
+  return next;
+}

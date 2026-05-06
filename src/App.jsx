@@ -6,6 +6,7 @@ import {
   evaluateGate, getStepState, findExerciseById, isBlockTransitionReady,
   getVisibleExercises, getLockedPreview, evaluateDeloadTriggers,
   scaleLoad,
+  applyCalibration,
 } from "./program";
 // ─────────────────────────────────────────────────────────────────────────────
 // SYSTEM PROMPT
@@ -601,6 +602,8 @@ export default function App() {
   const [ouraInput, setOuraInput] = useState({...initOura});
   const [showOuraForm, setShowOuraForm] = useState(false);
   const [showBlockConfirm, setShowBlockConfirm] = useState(false);
+  const [showCalibrate, setShowCalibrate] = useState(false);
+  const [calibrateInput, setCalibrateInput] = useState({});
   const [selDay, setSelDay]   = useState(todayKey());
   const [sessionData, setSessionData] = useState({});
   const [backPain, setBackPain] = useState(0);
@@ -912,6 +915,63 @@ export default function App() {
                 <button onClick={applyOura} style={{background:"#1a2e1a",border:"1px solid #6aaa6a",color:"#6aaa6a",padding:"5px 14px",cursor:"pointer",fontSize:8,letterSpacing:3,...MONO}}>APPLY →</button>
               </div>
             )}
+
+            {/* Program calibration */}
+            <button onClick={()=>setShowCalibrate(v=>!v)} style={{background:"#1a2e1a",border:"1px solid #2d4a2d",color:"#6aaa6a",padding:"5px 12px",cursor:"pointer",fontSize:8,letterSpacing:2,...MONO,marginBottom:8}}>
+              {showCalibrate?"▲ CLOSE":"▼ CALIBRATE PROGRAM TO CURRENT LIFTS"}
+            </button>
+            {showCalibrate && (
+              <div style={{background:"#0d130d",border:"1px solid #2d4a2d",padding:12,marginBottom:12}}>
+                <div style={{fontSize:9,color:"#7a9a7a",letterSpacing:1,marginBottom:10,...MONO}}>
+                  Enter your current working weight per lift. Leave blank if unsure. Program will jump
+                  each filled exercise to its closest progression step and reset that step's gate.
+                </div>
+                {DAY_ORDER.map(dk=>{
+                  const dDay = PROGRAM[dk];
+                  if (!dDay.exercises) return null;
+                  const visible = getVisibleExercises(dDay.exercises, currentBlock);
+                  if (visible.length === 0) return null;
+                  return (
+                    <div key={dk} style={{marginBottom:10}}>
+                      <div style={{fontSize:7,letterSpacing:3,color:"#6aaa6a",marginBottom:5}}>{dDay.label}</div>
+                      {visible.map(ex=>{
+                        const st = getStepState(stepState, ex.id);
+                        const curStep = ex.progression[Math.min(st.stepIdx, ex.progression.length-1)];
+                        return (
+                          <div key={ex.id} style={{display:"grid",gridTemplateColumns:"1.6fr 70px 1fr 110px",gap:8,alignItems:"center",padding:"3px 0",borderBottom:"1px solid #0f1f0f"}}>
+                            <div style={{fontSize:10,color:"#c8d4c8",...MONO}}>{ex.name}</div>
+                            <div style={{fontSize:8,color:"#4a6a4a",letterSpacing:1,...MONO}}>{st.stepIdx+1}/{ex.progression.length}</div>
+                            <div style={{fontSize:9,color:"#6aaa6a",...MONO}}>now: {curStep.load}</div>
+                            <input type="number" placeholder="current lb" min={0}
+                              value={calibrateInput[ex.id] ?? ""}
+                              onChange={e=>setCalibrateInput(p=>({...p,[ex.id]:e.target.value}))}
+                              style={BASE_INPUT} />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+                <div style={{display:"flex",gap:8,marginTop:6}}>
+                  <button onClick={()=>{
+                    const filled = Object.fromEntries(
+                      Object.entries(calibrateInput).filter(([,v])=>v !== "" && v !== null && v !== undefined)
+                    );
+                    if (Object.keys(filled).length === 0) { setShowCalibrate(false); return; }
+                    setStepState(prev=>applyCalibration(prev, PROGRAM, filled));
+                    setCalibrateInput({});
+                    setShowCalibrate(false);
+                  }} style={{background:"#1a2e1a",border:"1px solid #6aaa6a",color:"#6aaa6a",padding:"6px 14px",cursor:"pointer",fontSize:8,letterSpacing:3,...MONO}}>
+                    APPLY CALIBRATION →
+                  </button>
+                  <button onClick={()=>setCalibrateInput({})}
+                    style={{background:"transparent",border:"1px solid #2d4a2d",color:"#4a6a4a",padding:"6px 12px",cursor:"pointer",fontSize:8,letterSpacing:2,...MONO}}>
+                    CLEAR
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
               {[
                 {title:"DAILY NON-NEGOTIABLES",items:["Creatine 3–5g with food","First meal: 40–50g protein","Total: ≥1g protein / lb bodyweight","Zone 2 cap: ~133 bpm"]},
