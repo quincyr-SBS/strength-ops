@@ -1,17 +1,28 @@
 import { useState, useRef, useEffect } from "react";
 import { useOuraSync } from "./hooks/useOuraSync";
+import {
+  BLOCK_RANK, BLOCK_CONFIG, BLOCK_TRANSITION_ANCHORS, blockLabel,
+  G, S,
+  evaluateGate, getStepState, findExerciseById, isBlockTransitionReady,
+  getVisibleExercises, getLockedPreview, evaluateDeloadTriggers,
+  scaleLoad,
+} from "./program";
 // ─────────────────────────────────────────────────────────────────────────────
 // SYSTEM PROMPT
 // ─────────────────────────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are a strength and longevity coach for a 47-year-old male (DL 350, SQ 300, DB bench 115, back injury recovery, Oura Ring user). Draw from Dr. Vonda Wright, Peter Attia, Stuart McGill, Andy Galpin, Pavel Tsatsouline, Matthew Walker, and Gabrielle Lyon.
+const SYSTEM_PROMPT = `You are a strength and longevity coach for a 47-year-old male (back injury recovery, shoulder issues, Oura Ring user). Draw from Dr. Vonda Wright, Peter Attia, Stuart McGill, Andy Galpin, Pavel Tsatsouline, Matthew Walker, and Gabrielle Lyon.
+Targets (long-horizon, gate-based — not deadlines): DL 550, SQ 450, DB bench 150, OHP 150, BB curl 80+.
+Program model: open-ended macro cycle Block A → B → C → D. Each exercise advances by criteria gate (RPE_BELOW, RPE_PAIN, PAIN_FREE_WEEKS), not calendar weeks. Block transition only when anchor exercises clear final-step gate.
 Core rules:
 - Protein: 1g/lb bodyweight minimum, 40-50g at first meal, creatine 3-5g daily always
 - Training: protect the spine, Zone 2 at ~133 bpm, progressive overload without ego
 - Sleep: Oura readiness 85+ = train hard, 70-84 = moderate, below 70 = recovery only
-- HRV dropping 3+ days = cut volume. Elevated resting HR 5+ bpm = elevated baseline = Zone 2 or rest
+- HRV dropping 3+ days = cut volume. Elevated resting HR 5+ bpm = Zone 2 or rest
+- Block A: trap-bar high handle DL, goblet box squat, DB bench/OHP, accessory curls
+- Block B unlocks SSB squat + seated BB OHP + shoulder prehab — gated on pain-free weeks
 - No prolonged fasting on training days
 - Sarcopenia is the enemy — muscle mass is non-negotiable after 45
-Always give specific numbers. No vague advice. No fluff. Be direct and tactical. Keep responses concise but precise.`;
+Always give specific numbers. Reference current block, current exercise step, and gate progress when relevant. No vague advice. No fluff.`;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TIER CONFIG
@@ -36,15 +47,20 @@ const OURA_SOURCE_COLOR = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PERIODIZED PROGRAM — 8-week block
-// Structure per exercise: { id, name, cue, weeks: { [wk]: { sets, reps, load, rpe, note } } }
-// load = string (human-readable), loadNum = number for scaling
+// PROGRAM — criteria-gated progression, open-ended macro cycle
+//
+// Per exercise: { id, block:"A"|"B"|..., name, cue, replaces?:exId, progression:[step,...] }
+// Per step:     { sets, reps, load, loadNum, rpe, gate }
+// Gate types:
+//   RPE_BELOW       — top-set RPE ≤ N for K sessions  (accessories)
+//   RPE_PAIN        — + back/shoulder pain ≤ N        (heavy compounds)
+//   PAIN_FREE_WEEKS — N pain-free weeks at top load   (phase transitions)
+//   null            — maintenance, no progression
+//
+// Targets: DL 550 / SQ 450 / DB bench 150 / OHP 150 / curl 80+
+// Constraints: back injury recovery, shoulder issues. Longevity > speed.
+// Pure helpers (BLOCK_*, G, S, evaluateGate, etc.) live in ./program.js
 // ─────────────────────────────────────────────────────────────────────────────
-
-// Helper: build week entries across 4-week base block + deload + intensification
-function wb(w1, w2, w3, w4, w5deload, w6, w7, w8) {
-  return { 1: w1, 2: w2, 3: w3, 4: w4, 5: w5deload, 6: w6, 7: w7, 8: w8 };
-}
 
 const PROGRAM = {
   SUN: {
@@ -57,56 +73,79 @@ const PROGRAM = {
     warmup: ["McGill Big 3 — 3×10 each", "Goblet squat (light) — 2×8", "Band pull-apart — 2×15"],
     exercises: [
       {
-        id: "goblet_sq", name: "GOBLET BOX SQUAT", cue: "Sit to box, hip crease at or below knee, brace before descending",
-        weeks: wb(
-          { sets:3, reps:8, load:"70 lb DB", loadNum:70,  rpe:"RPE 6–7 — adjust ±10 lb" },
-          { sets:3, reps:8, load:"75 lb DB", loadNum:75,  rpe:"RPE 6–7" },
-          { sets:3, reps:8, load:"80 lb DB", loadNum:80,  rpe:"RPE 7" },
-          { sets:3, reps:8, load:"80 lb DB", loadNum:80,  rpe:"RPE 7 or +1 rep/set if clean" },
-          { sets:2, reps:8, load:"70 lb DB", loadNum:70,  rpe:"RPE 6 — deload" },
-          { sets:3, reps:8, load:"80 lb DB", loadNum:80,  rpe:"RPE 7" },
-          { sets:3, reps:8, load:"85 lb DB", loadNum:85,  rpe:"RPE 7" },
-          { sets:4, reps:8, load:"85 lb DB", loadNum:85,  rpe:"RPE 7–8" },
-        ),
+        id:"goblet_sq", block:"A", name:"GOBLET BOX SQUAT",
+        cue:"Sit to box, hip crease at or below knee, brace before descending",
+        progression: [
+          S(3,8,"70 lb DB", 70, "RPE 6–7", G.rpe(7, 2)),
+          S(3,8,"75 lb DB", 75, "RPE 6–7", G.rpe(7, 2)),
+          S(3,8,"80 lb DB", 80, "RPE 7",   G.rpe(7, 2)),
+          S(3,8,"85 lb DB", 85, "RPE 7",   G.rpe(7.5, 2)),
+          S(3,8,"90 lb DB", 90, "RPE 7",   G.rpe(7.5, 2)),
+          S(4,8,"95 lb DB", 95, "RPE 7–8", G.rpe(8, 2)),
+          S(4,8,"100 lb DB",100,"RPE 8",   G.weeks(3, 2)),  // → unlock SSB squat
+        ],
       },
       {
-        id: "db_bench_mon", name: "DB BENCH PRESS", cue: "Retract scapula, controlled descent, 90s rest between sets",
-        weeks: wb(
-          { sets:4, reps:8,  load:"90 lb DB",  loadNum:90,  rpe:"RPE 7" },
-          { sets:4, reps:8,  load:"95 lb DB",  loadNum:95,  rpe:"RPE 7" },
-          { sets:4, reps:8,  load:"100 lb DB", loadNum:100, rpe:"RPE 7" },
-          { sets:4, reps:8,  load:"100 lb DB", loadNum:100, rpe:"RPE 7 — add rep if ≤7" },
-          { sets:2, reps:8,  load:"90 lb DB",  loadNum:90,  rpe:"RPE 6 — deload" },
-          { sets:5, reps:6,  load:"100 lb DB", loadNum:100, rpe:"RPE 7" },
-          { sets:5, reps:6,  load:"105 lb DB", loadNum:105, rpe:"RPE 7–8" },
-          { sets:5, reps:5,  load:"110 lb DB", loadNum:110, rpe:"RPE 8 — HARD tier only" },
-        ),
+        id:"ssb_squat", block:"B", replaces:"goblet_sq", name:"SSB BOX SQUAT",
+        cue:"Safety squat bar — back-friendly. Sit to box, brace hard, drive up. Start light, RPE 6.",
+        progression: [
+          S(3,5,"135 lb",135,"RPE 6 — pattern",      G.rpePain(6, 2, 3)),
+          S(3,5,"155 lb",155,"RPE 6",                 G.rpePain(6.5, 2, 3)),
+          S(4,5,"175 lb",175,"RPE 7",                 G.rpePain(7, 2, 3)),
+          S(4,5,"195 lb",195,"RPE 7",                 G.rpePain(7, 2, 3)),
+          S(4,5,"215 lb",215,"RPE 7–8",               G.rpePain(7.5, 2, 3)),
+          S(5,3,"235 lb",235,"RPE 8",                 G.rpePain(8, 2, 3)),
+          S(5,3,"255 lb",255,"RPE 8",                 G.rpePain(8, 2, 3)),
+          S(5,3,"275 lb",275,"RPE 8 — HARD only",     G.weeks(4, 2)),  // → Block C transition
+        ],
       },
       {
-        id: "cable_row_mon", name: "CABLE SEATED ROW", cue: "Drive elbows back, full contraction, no momentum",
-        weeks: wb(
-          { sets:3, reps:10, load:"160 lb", loadNum:160, rpe:"controlled" },
-          { sets:3, reps:10, load:"165 lb", loadNum:165, rpe:"controlled" },
-          { sets:3, reps:10, load:"170 lb", loadNum:170, rpe:"controlled" },
-          { sets:3, reps:10, load:"175 lb", loadNum:175, rpe:"controlled" },
-          { sets:2, reps:10, load:"155 lb", loadNum:155, rpe:"deload" },
-          { sets:4, reps:10, load:"175 lb", loadNum:175, rpe:"controlled" },
-          { sets:4, reps:10, load:"180 lb", loadNum:180, rpe:"controlled" },
-          { sets:4, reps:10, load:"185 lb", loadNum:185, rpe:"controlled" },
-        ),
+        id:"db_bench_mon", block:"A", name:"DB BENCH PRESS",
+        cue:"Retract scapula, controlled descent, 90s rest between sets",
+        progression: [
+          S(4,8,"90 lb DB",  90, "RPE 7",    G.rpe(7, 2)),
+          S(4,8,"95 lb DB",  95, "RPE 7",    G.rpe(7, 2)),
+          S(4,8,"100 lb DB",100, "RPE 7",    G.rpe(7, 2)),
+          S(4,8,"105 lb DB",105, "RPE 7–8",  G.rpe(7.5, 2)),
+          S(5,6,"110 lb DB",110, "RPE 7–8",  G.rpe(8, 2)),
+          S(5,6,"115 lb DB",115, "RPE 8 — HARD only", G.rpe(8, 2)),
+          S(5,5,"120 lb DB",120, "RPE 8 — HARD only", G.rpe(8, 2)),
+          S(5,5,"125 lb DB",125, "RPE 8 — HARD only", G.weeks(3, 2)),  // → Block B unlock contributor
+        ],
       },
       {
-        id: "pallof_mon", name: "PALLOF PRESS", cue: "No rotation — this is anti-rotation. Brace hard, press to full extension, hold 2s",
-        weeks: wb(
-          { sets:3, reps:10, load:"20–30 lb / side", loadNum:25,  rpe:"strict" },
-          { sets:3, reps:10, load:"25–30 lb / side", loadNum:27,  rpe:"strict" },
-          { sets:3, reps:10, load:"30 lb / side",    loadNum:30,  rpe:"strict" },
-          { sets:3, reps:10, load:"30–35 lb / side", loadNum:32,  rpe:"strict" },
-          { sets:2, reps:10, load:"20–25 lb / side", loadNum:22,  rpe:"deload" },
-          { sets:3, reps:12, load:"30–35 lb / side", loadNum:32,  rpe:"strict" },
-          { sets:3, reps:12, load:"35 lb / side",    loadNum:35,  rpe:"strict" },
-          { sets:4, reps:12, load:"35–40 lb / side", loadNum:37,  rpe:"strict" },
-        ),
+        id:"cable_row_mon", block:"A", name:"CABLE SEATED ROW",
+        cue:"Drive elbows back, full contraction, no momentum",
+        progression: [
+          S(3,10,"160 lb",160,"controlled", G.rpe(7, 2)),
+          S(3,10,"170 lb",170,"controlled", G.rpe(7, 2)),
+          S(4,10,"180 lb",180,"controlled", G.rpe(7, 2)),
+          S(4,10,"190 lb",190,"controlled", G.rpe(7.5, 2)),
+          S(4,10,"200 lb",200,"controlled", G.rpe(8, 2)),
+          S(4,8, "210 lb",210,"controlled", G.rpe(8, 2)),
+        ],
+      },
+      {
+        id:"bb_curl_mon", block:"A", name:"BARBELL CURL",
+        cue:"Strict — no body swing. Elbows pinned. Full ROM. Toward 80+ lb goal.",
+        progression: [
+          S(3,10,"45 lb",45,"RPE 7",  G.rpe(7, 2)),
+          S(3,10,"55 lb",55,"RPE 7",  G.rpe(7, 2)),
+          S(3,10,"65 lb",65,"RPE 7–8",G.rpe(7.5, 2)),
+          S(4,8, "75 lb",75,"RPE 8",  G.rpe(8, 2)),
+          S(4,8, "85 lb",85,"RPE 8",  G.rpe(8, 2)),
+          S(4,6, "95 lb",95,"RPE 8 — HARD only", G.rpe(8, 2)),
+        ],
+      },
+      {
+        id:"pallof_mon", block:"A", name:"PALLOF PRESS",
+        cue:"No rotation — this is anti-rotation. Brace hard, press to full extension, hold 2s",
+        progression: [
+          S(3,10,"25 lb / side",25,"strict", G.rpe(7, 2)),
+          S(3,10,"30 lb / side",30,"strict", G.rpe(7, 2)),
+          S(3,12,"35 lb / side",35,"strict", G.rpe(7, 2)),
+          S(3,12,"40 lb / side",40,"strict", G.rpe(7.5, 2)),
+        ],
       },
     ],
   },
@@ -116,57 +155,55 @@ const PROGRAM = {
     warmup: ["Hip hinge drill — 2×10", "Glute bridge — 2×15", "Dead bug — 2×10/side"],
     exercises: [
       {
-        id: "trap_bar", name: "TRAP BAR DEADLIFT (HIGH HANDLES)", cue: "Hinge — not squat. Brace before pull. No lumbar rounding. High handles protect spine.",
-        gates: { week8: "Only at 350+ if Readiness ≥85 and back pain ≤2/10. Otherwise repeat Week 6 loads." },
-        weeks: wb(
-          { sets:4, reps:5, load:"305 lb", loadNum:305, rpe:"RPE 7" },
-          { sets:4, reps:5, load:"315 lb", loadNum:315, rpe:"RPE 7–8" },
-          { sets:5, reps:4, load:"325 lb", loadNum:325, rpe:"RPE 8" },
-          { sets:5, reps:4, load:"335 lb", loadNum:335, rpe:"RPE 8" },
-          { sets:2, reps:5, load:"295 lb", loadNum:295, rpe:"RPE 6 — deload" },
-          { sets:5, reps:3, load:"350 lb", loadNum:350, rpe:"HARD tier only — RPE 8" },
-          { sets:6, reps:2, load:"365 lb", loadNum:365, rpe:"HARD tier only — RPE 8–9" },
-          { sets:5, reps:2, load:"375 lb", loadNum:375, rpe:"HARD tier only + back ≤2/10" },
-        ),
+        id:"trap_bar", block:"A", name:"TRAP BAR DEADLIFT (HIGH HANDLES)",
+        cue:"Hinge — not squat. Brace before pull. No lumbar rounding. High handles protect spine.",
+        progression: [
+          S(4,5,"305 lb",305,"RPE 7",            G.rpePain(7, 2, 3)),
+          S(4,5,"320 lb",320,"RPE 7",            G.rpePain(7, 2, 3)),
+          S(5,4,"335 lb",335,"RPE 7–8",          G.rpePain(7.5, 2, 3)),
+          S(5,4,"350 lb",350,"RPE 8 — HARD only",G.rpePain(8, 2, 3)),
+          S(5,3,"365 lb",365,"RPE 8 — HARD only",G.rpePain(8, 2, 3)),
+          S(5,3,"380 lb",380,"RPE 8 — HARD only",G.rpePain(8, 2, 3)),
+          S(5,2,"395 lb",395,"RPE 8–9 — HARD only", G.rpePain(8.5, 2, 3)),
+          S(5,2,"410 lb",410,"RPE 8–9 — HARD only + back ≤2/10", G.rpePain(8.5, 2, 3)),
+          S(5,2,"425 lb",425,"RPE 9 — HARD only + back ≤2/10",   G.weeks(4, 2)),  // → Block B unlock contributor
+        ],
       },
       {
-        id: "lat_pull", name: "LAT PULLDOWN", cue: "Lean back slightly, pull to upper chest, full stretch overhead, controlled",
-        weeks: wb(
-          { sets:4, reps:10, load:"180 lb", loadNum:180, rpe:"controlled" },
-          { sets:4, reps:10, load:"185 lb", loadNum:185, rpe:"controlled" },
-          { sets:4, reps:10, load:"190 lb", loadNum:190, rpe:"controlled" },
-          { sets:4, reps:10, load:"195 lb", loadNum:195, rpe:"controlled" },
-          { sets:2, reps:10, load:"170 lb", loadNum:170, rpe:"deload" },
-          { sets:4, reps:8,  load:"195 lb", loadNum:195, rpe:"controlled" },
-          { sets:4, reps:8,  load:"200 lb", loadNum:200, rpe:"controlled" },
-          { sets:5, reps:8,  load:"200 lb", loadNum:200, rpe:"controlled" },
-        ),
+        id:"lat_pull", block:"A", name:"LAT PULLDOWN",
+        cue:"Lean back slightly, pull to upper chest, full stretch overhead, controlled",
+        progression: [
+          S(4,10,"180 lb",180,"controlled", G.rpe(7, 2)),
+          S(4,10,"190 lb",190,"controlled", G.rpe(7, 2)),
+          S(4,10,"200 lb",200,"controlled", G.rpe(7.5, 2)),
+          S(4,8, "210 lb",210,"controlled", G.rpe(8, 2)),
+          S(5,8, "220 lb",220,"controlled", G.rpe(8, 2)),
+        ],
       },
       {
-        id: "hip_thrust", name: "BARBELL HIP THRUST", cue: "Chin tucked, glute squeeze at top, no lumbar overextension",
-        weeks: wb(
-          { sets:3, reps:10, load:"180 lb", loadNum:180, rpe:"RPE 6–7" },
-          { sets:3, reps:10, load:"200 lb", loadNum:200, rpe:"RPE 7" },
-          { sets:3, reps:10, load:"220 lb", loadNum:220, rpe:"RPE 7" },
-          { sets:3, reps:10, load:"240 lb", loadNum:240, rpe:"RPE 7–8" },
-          { sets:2, reps:10, load:"180 lb", loadNum:180, rpe:"RPE 6 — deload" },
-          { sets:3, reps:10, load:"250 lb", loadNum:250, rpe:"RPE 7–8" },
-          { sets:4, reps:10, load:"260 lb", loadNum:260, rpe:"RPE 8" },
-          { sets:4, reps:10, load:"270 lb", loadNum:270, rpe:"RPE 8" },
-        ),
+        id:"hip_thrust", block:"A", name:"BARBELL HIP THRUST",
+        cue:"Chin tucked, glute squeeze at top, no lumbar overextension",
+        progression: [
+          S(3,10,"180 lb",180,"RPE 6–7",  G.rpe(7, 2)),
+          S(3,10,"200 lb",200,"RPE 7",    G.rpe(7, 2)),
+          S(3,10,"220 lb",220,"RPE 7",    G.rpe(7, 2)),
+          S(3,10,"240 lb",240,"RPE 7–8",  G.rpe(7.5, 2)),
+          S(4,10,"260 lb",260,"RPE 8",    G.rpe(8, 2)),
+          S(4,10,"280 lb",280,"RPE 8",    G.rpe(8, 2)),
+          S(4,8, "300 lb",300,"RPE 8",    G.rpe(8, 2)),
+          S(4,6, "320 lb",320,"RPE 8 — HARD only", G.rpe(8, 2)),
+        ],
       },
       {
-        id: "face_pull", name: "CABLE FACE PULL", cue: "Pull to forehead, external rotate at end. Rear delt + rotator cuff health.",
-        weeks: wb(
-          { sets:2, reps:15, load:"40–60 lb", loadNum:50,  rpe:"controlled" },
-          { sets:2, reps:15, load:"45–60 lb", loadNum:52,  rpe:"controlled" },
-          { sets:3, reps:15, load:"50–60 lb", loadNum:55,  rpe:"controlled" },
-          { sets:3, reps:15, load:"55–65 lb", loadNum:60,  rpe:"controlled" },
-          { sets:2, reps:15, load:"40–50 lb", loadNum:45,  rpe:"deload" },
-          { sets:3, reps:15, load:"55–65 lb", loadNum:60,  rpe:"controlled" },
-          { sets:3, reps:15, load:"60–70 lb", loadNum:65,  rpe:"controlled" },
-          { sets:3, reps:15, load:"65–70 lb", loadNum:67,  rpe:"controlled" },
-        ),
+        id:"face_pull", block:"A", name:"CABLE FACE PULL",
+        cue:"Pull to forehead, external rotate at end. Rear delt + rotator cuff health.",
+        progression: [
+          S(2,15,"50 lb",50,"controlled", G.rpe(7, 2)),
+          S(3,15,"55 lb",55,"controlled", G.rpe(7, 2)),
+          S(3,15,"60 lb",60,"controlled", G.rpe(7, 2)),
+          S(3,15,"65 lb",65,"controlled", G.rpe(7, 2)),
+          S(3,15,"70 lb",70,"controlled", G.rpe(7, 2)),
+        ],
       },
     ],
   },
@@ -180,59 +217,88 @@ const PROGRAM = {
   THU: {
     label: "THURSDAY", focus: "LIFT (AM) + ZONE 2 (PM)", type: "lift+cardio",
     cardio: [{ name: "ZONE 2 PM SESSION", duration: "60 min", target: "~133 bpm", note: "Separate from lifting by 4+ hours if possible." }],
-    warmup: ["Band pull-apart — 3×15", "Wall slides — 2×12", "Cuban press 5lb — 2×10"],
+    warmup: ["Band pull-apart — 3×15", "Wall slides — 2×12", "Y-T-W on bench — 2×8 each", "Cable external rotation — 2×12/side"],
     exercises: [
       {
-        id: "incline_db", name: "INCLINE DB BENCH PRESS", cue: "30–45° incline. Retract scapula. Controlled descent. No bounce.",
-        weeks: wb(
-          { sets:4, reps:6, load:"80 lb DB",  loadNum:80,  rpe:"RPE 7" },
-          { sets:4, reps:6, load:"85 lb DB",  loadNum:85,  rpe:"RPE 7" },
-          { sets:4, reps:6, load:"90 lb DB",  loadNum:90,  rpe:"RPE 7–8" },
-          { sets:4, reps:6, load:"90 lb DB",  loadNum:90,  rpe:"RPE 7–8 — add reps if RPE allows" },
-          { sets:2, reps:6, load:"75 lb DB",  loadNum:75,  rpe:"RPE 6 — deload" },
-          { sets:4, reps:6, load:"90 lb DB",  loadNum:90,  rpe:"RPE 7" },
-          { sets:4, reps:6, load:"95 lb DB",  loadNum:95,  rpe:"RPE 7–8" },
-          { sets:4, reps:5, load:"100 lb DB", loadNum:100, rpe:"RPE 8 — if Readiness allows" },
-        ),
+        id:"incline_db", block:"A", name:"INCLINE DB BENCH PRESS",
+        cue:"30–45° incline. Retract scapula. Controlled descent. No bounce.",
+        progression: [
+          S(4,6,"80 lb DB",  80, "RPE 7",   G.rpe(7, 2)),
+          S(4,6,"85 lb DB",  85, "RPE 7",   G.rpe(7, 2)),
+          S(4,6,"90 lb DB",  90, "RPE 7–8", G.rpe(7.5, 2)),
+          S(4,6,"95 lb DB",  95, "RPE 7–8", G.rpe(8, 2)),
+          S(4,5,"100 lb DB",100, "RPE 8",   G.rpe(8, 2)),
+          S(4,5,"105 lb DB",105, "RPE 8 — HARD only", G.rpe(8, 2)),
+          S(4,5,"110 lb DB",110, "RPE 8 — HARD only", G.rpe(8, 2)),
+        ],
       },
       {
-        id: "cable_row_thu", name: "CABLE ROW (CHEST-SUPPORTED)", cue: "No momentum. Row to lower chest. Full stretch at extension.",
-        weeks: wb(
-          { sets:4, reps:8, load:"160 lb", loadNum:160, rpe:"controlled" },
-          { sets:4, reps:8, load:"165 lb", loadNum:165, rpe:"controlled" },
-          { sets:4, reps:8, load:"170 lb", loadNum:170, rpe:"controlled" },
-          { sets:4, reps:8, load:"175 lb", loadNum:175, rpe:"controlled" },
-          { sets:2, reps:8, load:"155 lb", loadNum:155, rpe:"deload" },
-          { sets:4, reps:8, load:"175 lb", loadNum:175, rpe:"controlled" },
-          { sets:4, reps:8, load:"180 lb", loadNum:180, rpe:"controlled" },
-          { sets:5, reps:8, load:"185 lb", loadNum:185, rpe:"controlled" },
-        ),
+        id:"cable_row_thu", block:"A", name:"CABLE ROW (CHEST-SUPPORTED)",
+        cue:"No momentum. Row to lower chest. Full stretch at extension.",
+        progression: [
+          S(4,8,"160 lb",160,"controlled", G.rpe(7, 2)),
+          S(4,8,"170 lb",170,"controlled", G.rpe(7, 2)),
+          S(4,8,"180 lb",180,"controlled", G.rpe(7.5, 2)),
+          S(4,8,"190 lb",190,"controlled", G.rpe(8, 2)),
+          S(5,8,"200 lb",200,"controlled", G.rpe(8, 2)),
+        ],
       },
       {
-        id: "seated_db_press", name: "SEATED DB SHOULDER PRESS", cue: "Neutral spine, no lumbar arch — brace before every rep. Press straight overhead.",
-        weeks: wb(
-          { sets:3, reps:8, load:"45 lb DB", loadNum:45, rpe:"RPE 6–7 — adjust ±5–10 lb" },
-          { sets:3, reps:8, load:"50 lb DB", loadNum:50, rpe:"RPE 7" },
-          { sets:3, reps:8, load:"55 lb DB", loadNum:55, rpe:"RPE 7" },
-          { sets:3, reps:8, load:"55 lb DB", loadNum:55, rpe:"RPE 7 — add rep if RPE drops" },
-          { sets:2, reps:8, load:"40 lb DB", loadNum:40, rpe:"RPE 6 — deload" },
-          { sets:4, reps:8, load:"55 lb DB", loadNum:55, rpe:"RPE 7" },
-          { sets:4, reps:8, load:"60 lb DB", loadNum:60, rpe:"RPE 7–8" },
-          { sets:4, reps:6, load:"65 lb DB", loadNum:65, rpe:"RPE 8" },
-        ),
+        id:"shoulder_prehab", block:"A", name:"SHOULDER PREHAB BLOCK",
+        cue:"Y-T-W on bench + cable external rotation + Cuban press. Non-negotiable before pressing.",
+        progression: [
+          S(3,12,"5 lb plates / cable 10 lb", 10, "strict — no momentum", G.none()),
+          S(3,12,"7.5 lb / cable 12 lb",     12, "strict",                G.none()),
+          S(3,12,"10 lb / cable 15 lb",      15, "strict",                G.none()),
+        ],
       },
       {
-        id: "tri_pressdown", name: "TRICEPS CABLE PRESSDOWN", cue: "Lock elbows at sides, full extension, controlled return",
-        weeks: wb(
-          { sets:2, reps:12, load:"50–70 lb", loadNum:60, rpe:"controlled" },
-          { sets:2, reps:12, load:"55–70 lb", loadNum:62, rpe:"controlled" },
-          { sets:3, reps:12, load:"60–70 lb", loadNum:65, rpe:"controlled" },
-          { sets:3, reps:12, load:"65–75 lb", loadNum:70, rpe:"controlled" },
-          { sets:2, reps:12, load:"50–60 lb", loadNum:55, rpe:"deload" },
-          { sets:3, reps:12, load:"65–75 lb", loadNum:70, rpe:"controlled" },
-          { sets:3, reps:12, load:"70–80 lb", loadNum:75, rpe:"controlled" },
-          { sets:3, reps:10, load:"75–85 lb", loadNum:80, rpe:"controlled" },
-        ),
+        id:"seated_db_press", block:"A", name:"SEATED DB SHOULDER PRESS",
+        cue:"Neutral spine, no lumbar arch — brace before every rep. Press straight overhead.",
+        progression: [
+          S(3,8,"45 lb DB",45,"RPE 6–7", G.rpePain(7, 2, 2)),
+          S(3,8,"50 lb DB",50,"RPE 7",   G.rpePain(7, 2, 2)),
+          S(3,8,"55 lb DB",55,"RPE 7",   G.rpePain(7, 2, 2)),
+          S(4,8,"60 lb DB",60,"RPE 7–8", G.rpePain(7.5, 2, 2)),
+          S(4,6,"65 lb DB",65,"RPE 8",   G.rpePain(8, 2, 2)),
+          S(4,6,"70 lb DB",70,"RPE 8 — HARD only", G.rpePain(8, 2, 2)),
+          S(4,5,"75 lb DB",75,"RPE 8 — HARD only", G.weeks(3, 2)),  // → unlock seated BB OHP
+        ],
+      },
+      {
+        id:"seated_bb_ohp", block:"B", replaces:"seated_db_press", name:"SEATED BARBELL OHP",
+        cue:"Back-supported. Brace before every rep. Press to lockout, controlled descent. Shoulder prehab MUST be done first.",
+        progression: [
+          S(4,5,"95 lb",  95, "RPE 6 — pattern",        G.rpePain(6.5, 2, 3)),
+          S(4,5,"105 lb",105, "RPE 7",                   G.rpePain(7, 2, 3)),
+          S(4,5,"115 lb",115, "RPE 7",                   G.rpePain(7, 2, 3)),
+          S(5,4,"125 lb",125, "RPE 7–8",                 G.rpePain(7.5, 2, 3)),
+          S(5,4,"135 lb",135, "RPE 8 — HARD only",       G.rpePain(8, 2, 3)),
+          S(5,3,"145 lb",145, "RPE 8 — HARD only",       G.rpePain(8, 2, 3)),
+          S(5,3,"155 lb",155, "RPE 8 — HARD only",       G.weeks(4, 2)),  // → Block C standing BB OHP
+        ],
+      },
+      {
+        id:"hammer_curl_thu", block:"A", name:"HAMMER CURL",
+        cue:"Neutral grip — protects elbow. Strict, no swing. Toward 50 lb DB / hand.",
+        progression: [
+          S(3,10,"25 lb DB",25,"RPE 7",  G.rpe(7, 2)),
+          S(3,10,"30 lb DB",30,"RPE 7",  G.rpe(7, 2)),
+          S(3,10,"35 lb DB",35,"RPE 7–8",G.rpe(7.5, 2)),
+          S(4,8, "40 lb DB",40,"RPE 8",  G.rpe(8, 2)),
+          S(4,8, "45 lb DB",45,"RPE 8",  G.rpe(8, 2)),
+          S(4,6, "50 lb DB",50,"RPE 8",  G.rpe(8, 2)),
+        ],
+      },
+      {
+        id:"tri_pressdown", block:"A", name:"TRICEPS CABLE PRESSDOWN",
+        cue:"Lock elbows at sides, full extension, controlled return",
+        progression: [
+          S(3,12,"60 lb",60,"controlled", G.rpe(7, 2)),
+          S(3,12,"70 lb",70,"controlled", G.rpe(7, 2)),
+          S(3,12,"80 lb",80,"controlled", G.rpe(7.5, 2)),
+          S(3,10,"90 lb",90,"controlled", G.rpe(8, 2)),
+        ],
       },
     ],
   },
@@ -242,141 +308,105 @@ const PROGRAM = {
     warmup: ["Lateral band walk — 2×15", "Goblet squat hold 30s", "Hip flexor stretch 60s/side"],
     exercises: [
       {
-        id: "split_sq", name: "BULGARIAN SPLIT SQUAT (DB)", cue: "Front foot far enough — torso upright, knee tracks toe. NO spinal loading.",
-        weeks: wb(
-          { sets:3, reps:8, load:"20 lb DB / side", loadNum:20, rpe:"RPE 6–7" },
-          { sets:3, reps:8, load:"25 lb DB / side", loadNum:25, rpe:"RPE 7" },
-          { sets:3, reps:8, load:"30 lb DB / side", loadNum:30, rpe:"RPE 7" },
-          { sets:3, reps:8, load:"30 lb DB / side", loadNum:30, rpe:"RPE 7 — add reps if ≤7" },
-          { sets:2, reps:8, load:"20 lb DB / side", loadNum:20, rpe:"RPE 6 — deload" },
-          { sets:4, reps:8, load:"30 lb DB / side", loadNum:30, rpe:"RPE 7" },
-          { sets:4, reps:8, load:"35 lb DB / side", loadNum:35, rpe:"RPE 7–8" },
-          { sets:4, reps:8, load:"40 lb DB / side", loadNum:40, rpe:"RPE 8" },
-        ),
+        id:"split_sq", block:"A", name:"BULGARIAN SPLIT SQUAT (DB)",
+        cue:"Front foot far enough — torso upright, knee tracks toe. NO spinal loading.",
+        progression: [
+          S(3,8,"20 lb DB / side",20,"RPE 6–7", G.rpe(7, 2)),
+          S(3,8,"25 lb DB / side",25,"RPE 7",   G.rpe(7, 2)),
+          S(3,8,"30 lb DB / side",30,"RPE 7",   G.rpe(7, 2)),
+          S(4,8,"35 lb DB / side",35,"RPE 7–8", G.rpe(7.5, 2)),
+          S(4,8,"40 lb DB / side",40,"RPE 8",   G.rpe(8, 2)),
+          S(4,6,"45 lb DB / side",45,"RPE 8",   G.rpe(8, 2)),
+          S(4,6,"50 lb DB / side",50,"RPE 8 — HARD only", G.rpe(8, 2)),
+        ],
       },
       {
-        id: "cable_ham", name: "CABLE HAMSTRING CURL (SINGLE LEG)", cue: "Full ROM, slow eccentric (3s), don't let hip flexors dominate",
-        weeks: wb(
-          { sets:3, reps:12, load:"25–35 lb / side", loadNum:30, rpe:"controlled" },
-          { sets:3, reps:12, load:"30–35 lb / side", loadNum:32, rpe:"controlled" },
-          { sets:3, reps:12, load:"35–40 lb / side", loadNum:37, rpe:"controlled" },
-          { sets:3, reps:12, load:"35–40 lb / side", loadNum:37, rpe:"controlled" },
-          { sets:2, reps:12, load:"25–30 lb / side", loadNum:27, rpe:"deload" },
-          { sets:3, reps:12, load:"40 lb / side",    loadNum:40, rpe:"controlled" },
-          { sets:4, reps:12, load:"42–45 lb / side", loadNum:43, rpe:"controlled" },
-          { sets:4, reps:12, load:"45–50 lb / side", loadNum:47, rpe:"controlled" },
-        ),
+        id:"cable_ham", block:"A", name:"CABLE HAMSTRING CURL (SINGLE LEG)",
+        cue:"Full ROM, slow eccentric (3s), don't let hip flexors dominate",
+        progression: [
+          S(3,12,"30 lb / side",30,"controlled", G.rpe(7, 2)),
+          S(3,12,"35 lb / side",35,"controlled", G.rpe(7, 2)),
+          S(3,12,"40 lb / side",40,"controlled", G.rpe(7.5, 2)),
+          S(4,12,"45 lb / side",45,"controlled", G.rpe(8, 2)),
+          S(4,12,"50 lb / side",50,"controlled", G.rpe(8, 2)),
+        ],
       },
       {
-        id: "glute_bridge", name: "BARBELL GLUTE BRIDGE", cue: "Chin tucked, brace hard, drive hips up — not a back extension",
-        weeks: wb(
-          { sets:2, reps:12, load:"135–185 lb", loadNum:160, rpe:"RPE 6–7" },
-          { sets:2, reps:12, load:"165–185 lb", loadNum:175, rpe:"RPE 7" },
-          { sets:3, reps:12, load:"185 lb",     loadNum:185, rpe:"RPE 7" },
-          { sets:3, reps:12, load:"195 lb",     loadNum:195, rpe:"RPE 7–8" },
-          { sets:2, reps:10, load:"135–155 lb", loadNum:145, rpe:"RPE 6 — deload" },
-          { sets:3, reps:12, load:"200 lb",     loadNum:200, rpe:"RPE 7–8" },
-          { sets:3, reps:12, load:"215 lb",     loadNum:215, rpe:"RPE 8" },
-          { sets:4, reps:10, load:"225 lb",     loadNum:225, rpe:"RPE 8" },
-        ),
+        id:"glute_bridge", block:"A", name:"BARBELL GLUTE BRIDGE",
+        cue:"Chin tucked, brace hard, drive hips up — not a back extension",
+        progression: [
+          S(3,12,"160 lb",160,"RPE 6–7", G.rpe(7, 2)),
+          S(3,12,"180 lb",180,"RPE 7",   G.rpe(7, 2)),
+          S(3,12,"200 lb",200,"RPE 7",   G.rpe(7.5, 2)),
+          S(3,10,"220 lb",220,"RPE 8",   G.rpe(8, 2)),
+          S(4,10,"240 lb",240,"RPE 8",   G.rpe(8, 2)),
+          S(4,8, "260 lb",260,"RPE 8",   G.rpe(8, 2)),
+          S(4,8, "280 lb",280,"RPE 8 — HARD only", G.rpe(8, 2)),
+        ],
       },
       {
-        id: "farmer", name: "FARMER CARRY", cue: "Tall posture, packed shoulders, crisp steps — core endurance under load",
-        weeks: wb(
-          { sets:5, reps:1, load:"70–90 lb / hand × 30–40m", loadNum:80, rpe:"controlled — RPE 6" },
-          { sets:5, reps:1, load:"80–90 lb / hand × 35m",    loadNum:85, rpe:"controlled" },
-          { sets:5, reps:1, load:"85–95 lb / hand × 35–40m", loadNum:90, rpe:"controlled" },
-          { sets:5, reps:1, load:"90–100 lb / hand × 40m",   loadNum:95, rpe:"controlled" },
-          { sets:3, reps:1, load:"70–80 lb / hand × 30m",    loadNum:75, rpe:"deload — easy" },
-          { sets:5, reps:1, load:"95–105 lb / hand × 40m",   loadNum:100,rpe:"controlled" },
-          { sets:5, reps:1, load:"100–110 lb / hand × 40m",  loadNum:105,rpe:"controlled" },
-          { sets:6, reps:1, load:"105–115 lb / hand × 40m",  loadNum:110,rpe:"controlled" },
-        ),
+        id:"farmer", block:"A", name:"FARMER CARRY",
+        cue:"Tall posture, packed shoulders, crisp steps — core endurance under load",
+        progression: [
+          S(5,1,"80 lb / hand × 30m", 80, "RPE 6",        G.rpe(7, 2)),
+          S(5,1,"90 lb / hand × 35m", 90, "controlled",   G.rpe(7, 2)),
+          S(5,1,"100 lb / hand × 40m",100,"controlled",   G.rpe(7, 2)),
+          S(5,1,"110 lb / hand × 40m",110,"controlled",   G.rpe(7.5, 2)),
+          S(6,1,"120 lb / hand × 40m",120,"controlled",   G.rpe(8, 2)),
+        ],
       },
     ],
   },
   SAT: {
-    label: "SATURDAY", focus: "LIGHT LIFT + LIGHT CARDIO", type: "lift+cardio",
-    cardio: [{ name: "ZONE 2 EASY", duration: "30–45 min", target: "120–133 bpm", note: "Light. This is active recovery." }],
-    warmup: ["McGill Big 3 — 1 round", "Band pull-apart — 2×12"],
-    note: "SAT = technique practice + movement quality. RPE cap: 6. No grinding.",
+    label: "SATURDAY", focus: "LIGHT VOLUME / ACTIVE RECOVERY", type: "lift+cardio",
+    cardio: [{ name: "ZONE 2 WALK", duration: "30 min", target: "120–128 bpm", note: "Easy walk. This is recovery, not training." }],
+    warmup: ["Hip flexor stretch — 60s/side", "Band pull-apart — 2×15"],
+    note: "LIGHT VOLUME DAY — active recovery. No lifting. RPE 6 cap on carries.",
     exercises: [
       {
-        id: "trap_sat", name: "TRAP BAR TECHNIQUE (HIGH HANDLES)", cue: "Technique focus — RPE 5–6 hard cap. Pattern reinforcement only.",
-        weeks: wb(
-          { sets:3, reps:5, load:"225–245 lb", loadNum:235, rpe:"RPE 5–6 — cap" },
-          { sets:3, reps:5, load:"235–250 lb", loadNum:242, rpe:"RPE 5–6 — cap" },
-          { sets:3, reps:5, load:"240–255 lb", loadNum:247, rpe:"RPE 5–6 — cap" },
-          { sets:3, reps:5, load:"245–260 lb", loadNum:252, rpe:"RPE 5–6 — cap" },
-          { sets:2, reps:5, load:"205–225 lb", loadNum:215, rpe:"RPE 5 — deload" },
-          { sets:3, reps:5, load:"250–265 lb", loadNum:257, rpe:"RPE 5–6 — cap" },
-          { sets:3, reps:5, load:"255–270 lb", loadNum:262, rpe:"RPE 5–6 — cap" },
-          { sets:3, reps:5, load:"260–275 lb", loadNum:267, rpe:"RPE 5–6 — cap" },
-        ),
+        id:"light_carry_sat", block:"A", name:"LIGHT FARMER CARRY",
+        cue:"~50% of Friday's load. Tall posture, easy steps. This is recovery, not training. Advance only when load truly feels light (RPE ≤5).",
+        progression: [
+          S(3,1,"40 lb / hand × 30m",40,"RPE 5–6 cap", G.rpe(5, 2)),
+          S(3,1,"50 lb / hand × 30m",50,"RPE 5–6 cap", G.rpe(5, 2)),
+          S(3,1,"60 lb / hand × 30m",60,"RPE 5–6 cap", G.rpe(5, 2)),
+        ],
       },
       {
-        id: "db_bench_sat", name: "DB BENCH OR PUSH-UPS", cue: "Low intensity only. Technique drill. No grinding.",
-        weeks: wb(
-          { sets:2, reps:12, load:"60 lb DB or bodyweight", loadNum:60, rpe:"RPE 5–6" },
-          { sets:2, reps:12, load:"60–65 lb DB",            loadNum:62, rpe:"RPE 5–6" },
-          { sets:2, reps:12, load:"65 lb DB",               loadNum:65, rpe:"RPE 5–6" },
-          { sets:2, reps:12, load:"65 lb DB",               loadNum:65, rpe:"RPE 5–6" },
-          { sets:2, reps:12, load:"55 lb DB or push-ups",   loadNum:55, rpe:"RPE 5 — deload" },
-          { sets:2, reps:12, load:"65–70 lb DB",            loadNum:67, rpe:"RPE 5–6" },
-          { sets:2, reps:12, load:"70 lb DB",               loadNum:70, rpe:"RPE 6" },
-          { sets:2, reps:12, load:"70–75 lb DB",            loadNum:72, rpe:"RPE 6" },
-        ),
+        id:"upper_back_sat", block:"A", name:"BAND PULL-APART + FACE PULL",
+        cue:"Postural maintenance for shoulder health. Strict, controlled, no momentum.",
+        progression: [
+          S(3,20,"band + 50 lb cable",50,"strict", G.none()),
+        ],
       },
       {
-        id: "cable_row_sat", name: "CABLE ROW", cue: "Smooth, no momentum. Move weight, don't jerk it.",
-        weeks: wb(
-          { sets:2, reps:12, load:"140–150 lb", loadNum:145, rpe:"controlled" },
-          { sets:2, reps:12, load:"145–155 lb", loadNum:150, rpe:"controlled" },
-          { sets:2, reps:12, load:"150–160 lb", loadNum:155, rpe:"controlled" },
-          { sets:2, reps:12, load:"155–165 lb", loadNum:160, rpe:"controlled" },
-          { sets:2, reps:12, load:"135–145 lb", loadNum:140, rpe:"deload" },
-          { sets:2, reps:12, load:"155–165 lb", loadNum:160, rpe:"controlled" },
-          { sets:2, reps:12, load:"160–170 lb", loadNum:165, rpe:"controlled" },
-          { sets:2, reps:12, load:"165–175 lb", loadNum:170, rpe:"controlled" },
-        ),
-      },
-      {
-        id: "pallof_sat", name: "PALLOF PRESS", cue: "Anti-rotation. Brace, extend, hold 2s. Spine health.",
-        weeks: wb(
-          { sets:2, reps:10, load:"20–30 lb", loadNum:25, rpe:"strict" },
-          { sets:2, reps:10, load:"25–30 lb", loadNum:27, rpe:"strict" },
-          { sets:2, reps:10, load:"28–32 lb", loadNum:30, rpe:"strict" },
-          { sets:2, reps:10, load:"30–35 lb", loadNum:32, rpe:"strict" },
-          { sets:2, reps:10, load:"20–25 lb", loadNum:22, rpe:"deload" },
-          { sets:2, reps:10, load:"30–35 lb", loadNum:32, rpe:"strict" },
-          { sets:2, reps:10, load:"33–38 lb", loadNum:35, rpe:"strict" },
-          { sets:2, reps:10, load:"35–40 lb", loadNum:37, rpe:"strict" },
-        ),
+        id:"big3_sat", block:"A", name:"McGILL BIG 3",
+        cue:"Curl-up, side plank, bird-dog. 3×10 each. Non-negotiable spine work.",
+        progression: [
+          S(3,10,"bodyweight", 0,"strict", G.none()),
+        ],
       },
     ],
   },
 };
 
 const DAY_ORDER = ["SUN","MON","TUE","WED","THU","FRI","SAT"];
-const WEEK_LABELS = {
-  1:"BASE WK 1", 2:"BASE WK 2", 3:"BASE WK 3", 4:"BASE WK 4",
-  5:"DELOAD WK 5", 6:"INTENSIFY WK 6", 7:"INTENSIFY WK 7", 8:"INTENSIFY WK 8"
-};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HELPERS
+// REACT-LAYER HELPERS (impure / DOM-aware)
+// Pure helpers (evaluateGate, getVisibleExercises, etc.) live in ./program.js
 // ─────────────────────────────────────────────────────────────────────────────
 function getTier(r){ return r>=85?"HARD":r>=70?"MODERATE":"RECOVERY"; }
 function getHRVAlert(avg,today){ if(!avg||!today)return null; const d=avg-today; return d>=3?`HRV DOWN ${d}MS VS 7-DAY — CUT VOLUME`:null; }
 function getRHRAlert(base,today){ if(!base||!today)return null; const r=today-base; return r>=5?`RHR +${r} BPM ABOVE BASELINE — ZONE 2 OR REST`:null; }
 function todayKey(){ return DAY_ORDER[new Date().getDay()]; }
 
-// Scale load string for MODERATE tier (80%) — only numeric standalone loads
-function scaleLoad(load, mult) {
-  if (mult === 1.0) return load;
-  // Try to scale the first number in the string
-  return load.replace(/(\d+)/g, (m) => Math.round(parseInt(m)*mult/5)*5);
-}
+const LS_STEP_STATE         = "sqb_step_state";
+const LS_CURRENT_BLOCK      = "sqb_current_block";
+const LS_READINESS_HISTORY  = "sqb_readiness_history";
+function lsLoad(k, fallback){ try{ const v = localStorage.getItem(k); return v ? JSON.parse(v) : fallback; }catch{ return fallback; } }
+function lsSave(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch{ /* storage full or disabled — non-fatal */ } }
+function todayISO(){ return new Date().toISOString().slice(0,10); }
 
 const MONO = { fontFamily:"'Courier New',monospace" };
 const BASE_INPUT = { background:"#0a0f0a", border:"1px solid #2d4a2d", color:"#c8d4c8", padding:"5px 7px", ...MONO, fontSize:11, outline:"none", width:"100%", boxSizing:"border-box" };
@@ -420,31 +450,40 @@ function SetRow({ setNum, reps, load, rpe, mult, actual, onChange }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // EXERCISE CARD
 // ─────────────────────────────────────────────────────────────────────────────
-function ExerciseCard({ ex, week, mult, readiness, data, onUpdate }) {
+function ExerciseCard({ ex, exState, mult, painBack, painShoulder, data, onSetUpdate, onMetaUpdate, onLogSession, onAdvanceStep }) {
   const [open, setOpen] = useState(true);
-  const wk = ex.weeks[week] || ex.weeks[1];
-  const rows = Array.from({ length: wk.sets }, (_, i) => i);
+  const stepIdx   = Math.min(exState.stepIdx, ex.progression.length - 1);
+  const step      = ex.progression[stepIdx];
+  const stepCount = ex.progression.length;
+  const isFinalStep = stepIdx === stepCount - 1;
+  const rows      = Array.from({ length: step.sets }, (_, i) => i);
   const doneCount = rows.filter(i => data[i]?.done).length;
-  const allDone = doneCount === wk.sets;
+  const allDone   = doneCount === step.sets;
+  const sessionLogged = !!data.sessionLoggedAt;
+  const topRPEInput   = data.topRPE ?? "";
 
-  // Gate check (weeks 6–8 trap bar intensity)
-  const gateMsg = ex.gates && week >= 6 ? ex.gates.week8 : null;
-  const gated = gateMsg && readiness < 85;
+  const stepHistory = exState.history.filter(h => h.stepIdx === stepIdx);
+  const gateRes     = evaluateGate(step.gate, stepHistory);
+  const showAdvance = gateRes.cleared && !isFinalStep;
+  const blockGate   = isFinalStep && step.gate?.type === "PAIN_FREE_WEEKS";
 
   return (
     <div style={{
-      border:`1px solid ${allDone?"#2d4a2d":gated?"#4a2a2a":"#1e321e"}`,
-      background: allDone?"rgba(74,222,128,0.02)": gated?"rgba(248,113,113,0.03)":"#0d130d",
+      border:`1px solid ${allDone?"#2d4a2d":"#1e321e"}`,
+      background: allDone?"rgba(74,222,128,0.02)":"#0d130d",
       marginBottom:10,
     }}>
       <div onClick={()=>setOpen(v=>!v)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 12px",cursor:"pointer",borderBottom:open?"1px solid #1a2a1a":"none"}}>
-        <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <span style={{fontSize:12,fontWeight:"bold",letterSpacing:2,color:allDone?"#4ade80":gated?"#f87171":"#c8d4c8",...MONO}}>
-            {allDone?"✓ ":gated?"⚠ ":""}{ex.name}
+        <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+          <span style={{fontSize:12,fontWeight:"bold",letterSpacing:2,color:allDone?"#4ade80":"#c8d4c8",...MONO}}>
+            {allDone?"✓ ":""}{ex.name}
           </span>
-          <span style={{fontSize:8,color:"#4a6a4a",letterSpacing:1,...MONO}}>{doneCount}/{wk.sets} SETS</span>
+          <span style={{fontSize:8,color:"#4a6a4a",letterSpacing:1,...MONO}}>{doneCount}/{step.sets} SETS</span>
           <span style={{fontSize:9,color:"#4a6a4a",background:"#111a11",padding:"1px 6px",border:"1px solid #1e321e",...MONO}}>
-            {wk.sets}×{wk.reps} @ {mult<1?scaleLoad(wk.load,mult):wk.load}
+            {step.sets}×{step.reps} @ {mult<1?scaleLoad(step.load,mult):step.load}
+          </span>
+          <span style={{fontSize:8,color:gateRes.cleared?"#4ade80":"#facc15",background:"#0a1a0a",padding:"1px 6px",border:`1px solid ${gateRes.cleared?"#2d4a2d":"#3a3a0a"}`,letterSpacing:1,...MONO}}>
+            STEP {stepIdx+1}/{stepCount}{step.gate?` · ${gateRes.progress}`:" · MAINT"}
           </span>
         </div>
         <span style={{color:"#4a6a4a",fontSize:10,...MONO}}>{open?"▲":"▼"}</span>
@@ -452,17 +491,82 @@ function ExerciseCard({ ex, week, mult, readiness, data, onUpdate }) {
       {open && (
         <div>
           {ex.cue && <div style={{padding:"5px 12px",fontSize:9,color:"#5a7a5a",letterSpacing:1,borderBottom:"1px solid #0f1f0f",...MONO}}>› {ex.cue}</div>}
-          {gated && <div style={{padding:"5px 12px",fontSize:9,color:"#f87171",background:"rgba(248,113,113,0.05)",borderBottom:"1px solid #3a1a1a",...MONO}}>⚠ {gateMsg}</div>}
+          {step.gate && (
+            <div style={{padding:"4px 12px",fontSize:8,color:gateRes.cleared?"#4ade80":"#7a9a7a",letterSpacing:1,borderBottom:"1px solid #0f1f0f",...MONO}}>
+              GATE: {gateRes.note} {gateRes.cleared?" — CLEARED ✓":` — ${gateRes.progress}`}
+              {blockGate && <span style={{color:"#facc15",marginLeft:6}}>· phase transition</span>}
+            </div>
+          )}
           {mult < 1.0 && <div style={{padding:"4px 12px",fontSize:8,color:"#facc15",borderBottom:"1px solid #0f1f0f",...MONO}}>MODERATE TIER — LOADS SCALED TO 80%</div>}
           <div style={{display:"grid",gridTemplateColumns:"26px 50px 1fr 85px 1fr 90px",gap:5,padding:"4px 8px 2px",fontSize:7,letterSpacing:2,color:"#2a4a2a",borderBottom:"1px solid #0f1f0f",...MONO}}>
             <span>SET</span><span>REPS</span><span>PRESCRIBED</span><span>ACTUAL LB</span><span>REPS/NOTE</span><span></span>
           </div>
           {rows.map(i=>(
-            <SetRow key={i} setNum={i+1} reps={wk.reps} load={wk.load} rpe={wk.rpe} mult={mult}
-              actual={data[i]} onChange={v=>onUpdate(i,v)} />
+            <SetRow key={i} setNum={i+1} reps={step.reps} load={step.load} rpe={step.rpe} mult={mult}
+              actual={data[i]} onChange={v=>onSetUpdate(i,v)} />
           ))}
+
+          {/* Session-complete: top-set RPE + log session */}
+          {allDone && step.gate && !sessionLogged && (
+            <div style={{padding:"8px 12px",borderTop:"1px solid #1a2a1a",background:"#0a1a0a"}}>
+              <div style={{display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap"}}>
+                <div style={{flex:"1 1 130px"}}>
+                  <div style={{fontSize:7,letterSpacing:2,color:"#4a6a4a",marginBottom:3,...MONO}}>TOP-SET RPE (1–10)</div>
+                  <input type="number" min={1} max={10} step={0.5} value={topRPEInput}
+                    onChange={e=>onMetaUpdate("topRPE", e.target.value)}
+                    style={BASE_INPUT} placeholder="e.g. 7"/>
+                </div>
+                <button
+                  disabled={topRPEInput === "" || mult === 0}
+                  onClick={()=>onLogSession({
+                    topRPE: Number(topRPEInput),
+                    painBack, painShoulder,
+                  })}
+                  style={{background:topRPEInput!==""?"#2d4a2d":"#1a2e1a",border:"1px solid #6aaa6a",color:"#6aaa6a",padding:"6px 14px",cursor:topRPEInput!==""?"pointer":"default",fontSize:8,letterSpacing:2,...MONO}}>
+                  LOG SESSION →
+                </button>
+              </div>
+              <div style={{fontSize:8,color:"#5a7a5a",letterSpacing:1,marginTop:6,...MONO}}>
+                will stamp: back {painBack}/10 · shoulder {painShoulder}/10 — update on Readiness tab if these don't match how you felt during the session
+              </div>
+            </div>
+          )}
+          {sessionLogged && !showAdvance && step.gate && (
+            <div style={{padding:"6px 12px",borderTop:"1px solid #1a2a1a",fontSize:9,color:"#7a9a7a",letterSpacing:1,...MONO}}>
+              ✓ session logged @ RPE {data.topRPE} — gate progress {gateRes.progress} — {gateRes.cleared?"clear":"more sessions needed"}
+            </div>
+          )}
+          {showAdvance && (
+            <div style={{padding:"8px 12px",borderTop:"1px solid #2d4a2d",background:"rgba(74,222,128,0.05)",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+              <span style={{fontSize:9,color:"#4ade80",letterSpacing:1,...MONO}}>✓ GATE CLEARED — READY FOR STEP {stepIdx+2}/{stepCount}</span>
+              <button onClick={onAdvanceStep} style={{background:"#1a2e1a",border:"1px solid #4ade80",color:"#4ade80",padding:"5px 14px",cursor:"pointer",fontSize:8,letterSpacing:3,...MONO}}>ADVANCE STEP →</button>
+            </div>
+          )}
+          {isFinalStep && gateRes.cleared && (
+            <div style={{padding:"8px 12px",borderTop:"1px solid #2d4a2d",background:"rgba(250,204,21,0.05)",fontSize:9,color:"#facc15",letterSpacing:1,...MONO}}>
+              ★ FINAL STEP CLEARED — anchor for block transition. Hold or graduate from header.
+            </div>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LOCKED EXERCISE PREVIEW — shown when block is not yet unlocked
+// ─────────────────────────────────────────────────────────────────────────────
+function LockedExerciseCard({ ex }) {
+  const firstStep = ex.progression[0];
+  return (
+    <div style={{border:"1px dashed #3a3a0a",background:"rgba(250,204,21,0.02)",marginBottom:10,padding:"9px 12px",opacity:0.7}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+        <span style={{fontSize:11,fontWeight:"bold",letterSpacing:2,color:"#facc15",...MONO}}>🔒 {ex.name}</span>
+        <span style={{fontSize:7,color:"#facc15",background:"#1a1a0a",padding:"1px 6px",border:"1px solid #3a3a0a",letterSpacing:2,...MONO}}>BLOCK {ex.block} — LOCKED</span>
+        {ex.replaces && <span style={{fontSize:7,color:"#7a7a4a",letterSpacing:1,...MONO}}>replaces {ex.replaces}</span>}
+      </div>
+      <div style={{fontSize:9,color:"#7a7a4a",marginTop:4,...MONO}}>› {ex.cue}</div>
+      <div style={{fontSize:8,color:"#5a5a3a",marginTop:3,...MONO}}>STARTS @ {firstStep.sets}×{firstStep.reps} {firstStep.load} — {ex.progression.length} steps total</div>
     </div>
   );
 }
@@ -496,10 +600,34 @@ export default function App() {
   const { oura, setManualOverride, error: ouraError, loading: ouraLoading, refresh: refreshOura } = useOuraSync();
   const [ouraInput, setOuraInput] = useState({...initOura});
   const [showOuraForm, setShowOuraForm] = useState(false);
+  const [showBlockConfirm, setShowBlockConfirm] = useState(false);
   const [selDay, setSelDay]   = useState(todayKey());
-  const [week, setWeek]       = useState(1);
   const [sessionData, setSessionData] = useState({});
   const [backPain, setBackPain] = useState(0);
+  const [shoulderPain, setShoulderPain] = useState(0);
+
+  // Persisted: per-exercise step state + current block + readiness history
+  const [stepState, setStepState] = useState(() => lsLoad(LS_STEP_STATE, {}));
+  const [currentBlock, setCurrentBlock] = useState(() => lsLoad(LS_CURRENT_BLOCK, "A"));
+  const [readinessHistory, setReadinessHistory] = useState(() => lsLoad(LS_READINESS_HISTORY, []));
+
+  useEffect(()=>{ lsSave(LS_STEP_STATE, stepState); }, [stepState]);
+  useEffect(()=>{ lsSave(LS_CURRENT_BLOCK, currentBlock); }, [currentBlock]);
+  useEffect(()=>{ lsSave(LS_READINESS_HISTORY, readinessHistory); }, [readinessHistory]);
+
+  // Snapshot today's readiness once per day. Functional setter no-ops if today's
+  // snapshot is already current, so cascading renders are avoided.
+  useEffect(()=>{
+    if (!oura || oura.source === "manual") return;
+    const today = todayISO();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setReadinessHistory(prev => {
+      const last = prev[prev.length - 1];
+      if (last && last.date === today && last.readiness === oura.readiness && last.hrv === oura.hrv && last.rhr === oura.rhr) return prev;
+      const filtered = prev.filter(d => d.date !== today);
+      return [...filtered, { date:today, readiness:oura.readiness, hrv:oura.hrv, hrv7day:oura.hrv7day, rhr:oura.rhr, rhrBaseline:oura.rhrBaseline }].slice(-14);
+    });
+  }, [oura, oura.readiness, oura.hrv, oura.hrv7day, oura.rhr, oura.rhrBaseline, oura.source]);
 
   const [messages, setMessages] = useState([{ role:"assistant", content:"OPERATOR ONLINE. Metrics loaded. Give me something to work with." }]);
   const [chatInput, setChatInput] = useState("");
@@ -535,8 +663,13 @@ export default function App() {
   const mult   = tier==="HARD" ? 1.0 : tier==="MODERATE" ? 0.8 : 0;
   const hrvAlert = getHRVAlert(oura.hrv7day, oura.hrv);
   const rhrAlert = getRHRAlert(oura.rhrBaseline, oura.rhr);
-  const isDeload = week === 5;
-  const isIntensify = week >= 6;
+  const blockCfg = BLOCK_CONFIG[currentBlock];
+  const deloadTriggers = evaluateDeloadTriggers(readinessHistory);
+  const nextBlock = currentBlock === "A" ? "B" : currentBlock === "B" ? "C" : currentBlock === "C" ? "D" : null;
+  const transitionAnchors = currentBlock === "A" ? BLOCK_TRANSITION_ANCHORS.A_TO_B
+                          : currentBlock === "B" ? BLOCK_TRANSITION_ANCHORS.B_TO_C
+                          : currentBlock === "C" ? BLOCK_TRANSITION_ANCHORS.C_TO_D : [];
+  const blockAdvanceReady = nextBlock && transitionAnchors.length > 0 && isBlockTransitionReady(stepState, PROGRAM, transitionAnchors);
 
   useEffect(()=>{ chatEndRef.current?.scrollIntoView({behavior:"smooth"}); }, [messages,chatLoading]);
 
@@ -551,17 +684,60 @@ export default function App() {
     }));
   }
 
+  function logSession(exId, payload){
+    const today = todayISO();
+    setStepState(prev => {
+      const st = prev[exId] || { stepIdx:0, history:[] };
+      const entry = {
+        date: today,
+        stepIdx: st.stepIdx,
+        topRPE: payload.topRPE,
+        painBack: payload.painBack ?? 0,
+        painShoulder: payload.painShoulder ?? 0,
+        completed: true,
+      };
+      // Replace today's entry if already logged for this step (idempotent on same day)
+      const filtered = st.history.filter(h => !(h.date === today && h.stepIdx === st.stepIdx));
+      return { ...prev, [exId]: { ...st, history: [...filtered, entry] } };
+    });
+    // Mark session-logged in sessionData so UI hides the input
+    setSessionData(prev=>({
+      ...prev,
+      [selDay]:{...(prev[selDay]||{}),
+        [exId]:{...((prev[selDay]||{})[exId]||{}), sessionLoggedAt: today, topRPE: payload.topRPE}
+      }
+    }));
+  }
+
+  function advanceStep(exId){
+    setStepState(prev => {
+      const st = prev[exId] || { stepIdx:0, history:[] };
+      const ex = findExerciseById(PROGRAM, exId);
+      const maxIdx = ex ? ex.progression.length - 1 : st.stepIdx;
+      return { ...prev, [exId]: { ...st, stepIdx: Math.min(st.stepIdx + 1, maxIdx) } };
+    });
+    // Clear current-day session UI for this exercise so next session starts fresh
+    setSessionData(prev=>{
+      const day = {...(prev[selDay]||{})};
+      delete day[exId];
+      return {...prev, [selDay]: day};
+    });
+  }
+
   function getDayProgress(dk){
     const d = PROGRAM[dk];
     if(!d || !d.exercises || d.exercises.length===0) return null;
-    const total = d.exercises.reduce((a,e)=>{
-      const wk = e.weeks[week]||e.weeks[1];
-      return a + wk.sets;
+    const visible = getVisibleExercises(d.exercises, currentBlock);
+    const total = visible.reduce((a, e)=>{
+      const st   = getStepState(stepState, e.id);
+      const step = e.progression[Math.min(st.stepIdx, e.progression.length-1)];
+      return a + step.sets;
     }, 0);
-    const done = d.exercises.reduce((a,e)=>{
-      const wk = e.weeks[week]||e.weeks[1];
-      const ed = (sessionData[dk]||{})[e.id]||{};
-      return a + Array.from({length:wk.sets},(_,i)=>i).filter(i=>ed[i]?.done).length;
+    const done = visible.reduce((a, e)=>{
+      const st   = getStepState(stepState, e.id);
+      const step = e.progression[Math.min(st.stepIdx, e.progression.length-1)];
+      const ed   = (sessionData[dk]||{})[e.id]||{};
+      return a + Array.from({length:step.sets},(_,i)=>i).filter(i=>ed[i]?.done).length;
     }, 0);
     return {done, total};
   }
@@ -571,7 +747,7 @@ export default function App() {
     const userMsg = chatInput.trim();
     setChatInput("");
     const nutCtx = `[NUTRITION TODAY: ${nutTotals.cal}cal / ${nutTotals.protein}g protein / ${nutTotals.sodium}mg sodium / ${waterOz}oz water — targets: ${NUTRITION_TARGETS.cal}cal / ${NUTRITION_TARGETS.protein}g protein / ${NUTRITION_TARGETS.sodium}mg sodium / ${NUTRITION_TARGETS.water}oz — meals: ${foodLog.length>0?foodLog.map(f=>f.name).join(", "):"none logged"}]`;
-    const ctx = `[OURA: Readiness ${oura.readiness}, HRV ${oura.hrv}ms (7d avg: ${oura.hrv7day}ms), RHR ${oura.rhr}bpm (baseline: ${oura.rhrBaseline}bpm), Tier: ${tier}, Week: ${week}, Back Pain: ${backPain}/10]\n${nutCtx}\n\n${userMsg}`;
+    const ctx = `[OURA: Readiness ${oura.readiness}, HRV ${oura.hrv}ms (7d avg: ${oura.hrv7day}ms), RHR ${oura.rhr}bpm (baseline: ${oura.rhrBaseline}bpm), Tier: ${tier}, Block: ${currentBlock} (${blockLabel(currentBlock)}), Back Pain: ${backPain}/10, Shoulder Pain: ${shoulderPain}/10${deloadTriggers.length?`, DELOAD TRIGGERS: ${deloadTriggers.join("; ")}`:""}]\n${nutCtx}\n\n${userMsg}`;
     const newMsgs = [...messages, {role:"user",content:userMsg}];
     setMessages(newMsgs);
     setChatLoading(true);
@@ -603,16 +779,18 @@ export default function App() {
           <div style={{color:"#c8d4c8",fontSize:13,fontWeight:"bold",letterSpacing:3}}>STRENGTH OPS // LONGEVITY UNIT</div>
         </div>
         <div style={{display:"flex",gap:20,alignItems:"center"}}>
-          {/* Week selector */}
+          {/* Block badge + transition trigger */}
           <div style={{textAlign:"center"}}>
-            <div style={{fontSize:7,color:"#4a6a4a",letterSpacing:2,marginBottom:3}}>PROGRAM WEEK</div>
-            <div style={{display:"flex",alignItems:"center",gap:6}}>
-              <button onClick={()=>setWeek(w=>Math.max(1,w-1))} style={{background:"#1a2e1a",border:"1px solid #2d4a2d",color:"#6aaa6a",width:22,height:22,cursor:"pointer",fontSize:12,...MONO}}>‹</button>
-              <div style={{textAlign:"center"}}>
-                <div style={{fontSize:16,fontWeight:"bold",color: isDeload?"#f87171":isIntensify?"#facc15":"#6aaa6a",minWidth:28}}>{week}</div>
-                <div style={{fontSize:7,color:"#3a5a3a",letterSpacing:1}}>{WEEK_LABELS[week]}</div>
-              </div>
-              <button onClick={()=>setWeek(w=>Math.min(8,w+1))} style={{background:"#1a2e1a",border:"1px solid #2d4a2d",color:"#6aaa6a",width:22,height:22,cursor:"pointer",fontSize:12,...MONO}}>›</button>
+            <div style={{fontSize:7,color:"#4a6a4a",letterSpacing:2,marginBottom:3}}>MACRO BLOCK</div>
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
+              <div style={{fontSize:14,fontWeight:"bold",color:blockCfg.color,letterSpacing:3}}>{currentBlock}</div>
+              <div style={{fontSize:7,color:"#3a5a3a",letterSpacing:1}}>{blockCfg.name}</div>
+              {blockAdvanceReady && nextBlock && !showBlockConfirm && (
+                <button onClick={()=>setShowBlockConfirm(true)}
+                  style={{marginTop:4,background:"#1a2e1a",border:"1px solid #4ade80",color:"#4ade80",padding:"3px 8px",cursor:"pointer",fontSize:7,letterSpacing:2,...MONO}}>
+                  ▲ ADVANCE → {nextBlock}
+                </button>
+              )}
             </div>
           </div>
           <div style={{textAlign:"right"}}>
@@ -642,8 +820,39 @@ export default function App() {
           ))}
         </div>
       )}
-      {isDeload && <div style={{background:"rgba(248,113,113,0.06)",borderBottom:"1px solid #3a1a1a",padding:"4px 18px",fontSize:9,color:"#f87171",letterSpacing:2}}>WEEK 5 — MANDATORY DELOAD. 50–60% of sets. RPE cap 6. No grinding.</div>}
-      {isIntensify && !isDeload && <div style={{background:"rgba(250,204,21,0.04)",borderBottom:"1px solid #3a3a0a",padding:"4px 18px",fontSize:9,color:"#facc15",letterSpacing:2}}>INTENSIFICATION BLOCK (WK {week}). Readiness gates active on heavy trap bar sets.</div>}
+      {deloadTriggers.length > 0 && (
+        <div style={{background:"rgba(248,113,113,0.06)",borderBottom:"1px solid #3a1a1a",padding:"4px 18px",fontSize:9,color:"#f87171",letterSpacing:2}}>
+          {deloadTriggers.map((t,i) => <div key={i}>⚠ AUTO-DELOAD TRIGGER: {t}</div>)}
+        </div>
+      )}
+      {blockAdvanceReady && nextBlock && !showBlockConfirm && (
+        <div style={{background:"rgba(74,222,128,0.04)",borderBottom:"1px solid #2d4a2d",padding:"4px 18px",fontSize:9,color:"#4ade80",letterSpacing:2}}>
+          ✓ BLOCK {currentBlock} ANCHORS CLEARED — READY TO ADVANCE TO BLOCK {nextBlock}. Use header button when you're ready.
+        </div>
+      )}
+      {showBlockConfirm && nextBlock && (
+        <div style={{background:"#0d130d",borderBottom:"1px solid #2d4a2d",padding:"10px 18px",...MONO}}>
+          <div style={{fontSize:9,color:"#4ade80",letterSpacing:2,marginBottom:6}}>
+            CONFIRM BLOCK ADVANCE: {currentBlock} → {nextBlock}
+          </div>
+          <div style={{fontSize:9,color:"#7a9a7a",marginBottom:5}}>
+            Anchors cleared: {transitionAnchors.join(", ")}
+          </div>
+          <div style={{fontSize:9,color:"#9aba9a",marginBottom:8}}>
+            BLOCK {nextBlock} — {BLOCK_CONFIG[nextBlock].name}: {BLOCK_CONFIG[nextBlock].desc}
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={()=>{ setCurrentBlock(nextBlock); setShowBlockConfirm(false); }}
+              style={{background:"#1a2e1a",border:"1px solid #4ade80",color:"#4ade80",padding:"5px 14px",cursor:"pointer",fontSize:8,letterSpacing:3,...MONO}}>
+              ▲ CONFIRM ADVANCE
+            </button>
+            <button onClick={()=>setShowBlockConfirm(false)}
+              style={{background:"transparent",border:"1px solid #2d4a2d",color:"#4a6a4a",padding:"5px 14px",cursor:"pointer",fontSize:8,letterSpacing:3,...MONO}}>
+              CANCEL
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* NAV */}
       <nav style={{display:"flex",borderBottom:"1px solid #1e321e",background:"#0d130d",overflowX:"auto"}}>
@@ -671,6 +880,7 @@ export default function App() {
                 {label:"RHR TODAY",value:oura.rhr,unit:"bpm",color:(oura.rhr-oura.rhrBaseline)>=5?"#f87171":"#c8d4c8"},
                 {label:"RHR BASE",value:oura.rhrBaseline,unit:"bpm",color:"#c8d4c8"},
                 {label:"BACK PAIN",value:backPain,unit:"/10",color:backPain>=3?"#f87171":backPain>=1?"#facc15":"#4ade80"},
+                {label:"SHOULDER PAIN",value:shoulderPain,unit:"/10",color:shoulderPain>=3?"#f87171":shoulderPain>=1?"#facc15":"#4ade80"},
               ].map(m=>(
                 <div key={m.label} style={{background:"#0d130d",border:"1px solid #1e321e",padding:"9px 10px"}}>
                   <div style={{fontSize:7,letterSpacing:3,color:"#4a6a4a",marginBottom:4}}>{m.label}</div>
@@ -693,6 +903,10 @@ export default function App() {
                   <div>
                     <div style={{fontSize:7,letterSpacing:2,color:"#4a6a4a",marginBottom:3}}>BACK PAIN (0–10)</div>
                     <input type="number" min={0} max={10} value={backPain} onChange={e=>setBackPain(Number(e.target.value))} style={BASE_INPUT} />
+                  </div>
+                  <div>
+                    <div style={{fontSize:7,letterSpacing:2,color:"#4a6a4a",marginBottom:3}}>SHOULDER PAIN (0–10)</div>
+                    <input type="number" min={0} max={10} value={shoulderPain} onChange={e=>setShoulderPain(Number(e.target.value))} style={BASE_INPUT} />
                   </div>
                 </div>
                 <button onClick={applyOura} style={{background:"#1a2e1a",border:"1px solid #6aaa6a",color:"#6aaa6a",padding:"5px 14px",cursor:"pointer",fontSize:8,letterSpacing:3,...MONO}}>APPLY →</button>
@@ -730,7 +944,7 @@ export default function App() {
                    "FULL PROGRAM — HIT YOUR NUMBERS"}
                 </span>
               </div>
-              <span style={{fontSize:9,color: isDeload?"#f87171":isIntensify?"#facc15":"#6aaa6a",letterSpacing:2,fontWeight:"bold"}}>{WEEK_LABELS[week]}</span>
+              <span style={{fontSize:9,color:blockCfg.color,letterSpacing:2,fontWeight:"bold"}}>{blockLabel(currentBlock)}</span>
             </div>
 
             {/* Day tabs */}
@@ -804,12 +1018,32 @@ export default function App() {
                 {tier==="MODERATE"&&<div style={{fontSize:8,color:"#facc15",letterSpacing:1,marginBottom:8,padding:"5px 9px",background:"rgba(250,204,21,0.05)",border:"1px solid rgba(250,204,21,0.15)"}}>⚠ MODERATE DAY — ALL LOADS AT 80%. RPE TARGETS STILL APPLY. DO NOT GRIND.</div>}
                 {tier==="RECOVERY"&&<div style={{fontSize:8,color:"#f87171",letterSpacing:1,marginBottom:8,padding:"5px 9px",background:"rgba(248,113,113,0.05)",border:"1px solid rgba(248,113,113,0.15)"}}>✕ RECOVERY DAY — NO LOADING. ZONE 2 CARDIO AND MCGILL BIG 3 ONLY.</div>}
 
-                {/* Exercises */}
-                {tier!=="RECOVERY"&&day.exercises.map(ex=>(
-                  <ExerciseCard key={ex.id} ex={ex} week={week} mult={mult} readiness={oura.readiness}
+                {/* Exercises — visible (unlocked) */}
+                {tier!=="RECOVERY"&&getVisibleExercises(day.exercises, currentBlock).map(ex=>(
+                  <ExerciseCard key={ex.id} ex={ex}
+                    exState={getStepState(stepState, ex.id)}
+                    mult={mult} painBack={backPain} painShoulder={shoulderPain}
                     data={(sessionData[selDay]||{})[ex.id]||{}}
-                    onUpdate={(si,val)=>updateSet(selDay,ex.id,si,val)} />
+                    onSetUpdate={(si, val)=> updateSet(selDay, ex.id, si, val)}
+                    onMetaUpdate={(key, val)=> setSessionData(prev=>{
+                      const day = prev[selDay] || {};
+                      const exData = day[ex.id] || {};
+                      return { ...prev, [selDay]: { ...day, [ex.id]: { ...exData, [key]: val } } };
+                    })}
+                    onLogSession={(payload)=>logSession(ex.id, payload)}
+                    onAdvanceStep={()=>advanceStep(ex.id)}
+                  />
                 ))}
+
+                {/* Locked preview — upcoming block */}
+                {tier!=="RECOVERY" && getLockedPreview(day.exercises, currentBlock).length > 0 && (
+                  <div style={{marginTop:14}}>
+                    <div style={{fontSize:7,letterSpacing:3,color:"#7a7a4a",marginBottom:7}}>LOCKED — UNLOCKS WHEN BLOCK ADVANCES</div>
+                    {getLockedPreview(day.exercises, currentBlock).map(ex=>(
+                      <LockedExerciseCard key={ex.id} ex={ex} />
+                    ))}
+                  </div>
+                )}
 
                 {/* Cardio block */}
                 {day.cardio&&day.cardio.length>0&&(
@@ -1032,7 +1266,7 @@ Estimate reasonable values if exact amounts unknown. sodium in mg, all others in
         {/* ══ 04 COACH AI ════════════════════════════════════════════════════ */}
         {tab==="chat"&&(
           <div style={{display:"flex",flexDirection:"column",height:"70vh"}}>
-            <div style={{fontSize:7,letterSpacing:3,color:"#4a6a4a",marginBottom:8}}>COACH AI // R:{oura.readiness} // {tier} // HRV:{oura.hrv}ms // BACK:{backPain}/10 // WK{week} // {nutTotals.cal}cal/{nutTotals.protein}g logged</div>
+            <div style={{fontSize:7,letterSpacing:3,color:"#4a6a4a",marginBottom:8}}>COACH AI // R:{oura.readiness} // {tier} // HRV:{oura.hrv}ms // BACK:{backPain}/10 // SH:{shoulderPain}/10 // BLOCK {currentBlock} // {nutTotals.cal}cal/{nutTotals.protein}g logged</div>
             <div style={{flex:1,overflowY:"auto",background:"#0d130d",border:"1px solid #1e321e",padding:12,marginBottom:8,display:"flex",flexDirection:"column",gap:9}}>
               {messages.map((m,i)=>(
                 <div key={i} style={{display:"flex",flexDirection:"column",alignItems:m.role==="user"?"flex-end":"flex-start"}}>
@@ -1058,7 +1292,7 @@ Estimate reasonable values if exact amounts unknown. sodium in mg, all others in
         {/* ══ 05 LOG ══════════════════════════════════════════════════════════ */}
         {tab==="log"&&(
           <div>
-            <div style={{fontSize:7,letterSpacing:3,color:"#4a6a4a",marginBottom:10}}>SESSION LOG // {logDate} // {tier} // WK {week}</div>
+            <div style={{fontSize:7,letterSpacing:3,color:"#4a6a4a",marginBottom:10}}>SESSION LOG // {logDate} // {tier} // BLOCK {currentBlock}</div>
             <div style={{background:"#0d130d",border:"1px solid #1e321e",padding:12,marginBottom:14}}>
               <div style={{fontSize:7,letterSpacing:3,color:"#6aaa6a",marginBottom:9}}>MANUAL LOG ENTRY</div>
               <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr",gap:6,marginBottom:6}}>
