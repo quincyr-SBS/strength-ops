@@ -50,6 +50,9 @@ export function isoWeekKey(dateStr){
 export function evaluateGate(gate, stepHistory){
   if (!gate) return { cleared:false, progress:"—", note:"maintenance — no progression gate" };
   const completed = (stepHistory||[]).filter(h => h.completed);
+  // Legacy entries logged before tier-tracking landed are treated as HARD so
+  // existing progress doesn't regress when the HARD-confirmation rule lands.
+  const isHard = (h) => (h.tier ?? "HARD") === "HARD";
   if (gate.type === "RPE_BELOW"){
     const need   = gate.sessions;
     const lastN  = completed.slice(-need);
@@ -65,19 +68,26 @@ export function evaluateGate(gate, stepHistory){
       (h.painBack ?? 99) <= gate.pain &&
       (h.painShoulder ?? 99) <= gate.pain
     ).length;
-    const cleared= lastN.length >= need && pass === need;
-    return { cleared, progress:`${pass}/${need}`, note:`RPE ≤ ${gate.rpe} + pain ≤ ${gate.pain}/10 × ${need}` };
+    const allClean    = lastN.length >= need && pass === need;
+    const hasHard     = lastN.some(isHard);
+    const cleared     = allClean && hasHard;
+    const suffix      = allClean && !hasHard ? " · awaiting HARD-tier confirmation" : "";
+    return { cleared, progress:`${pass}/${need}${suffix}`, note:`RPE ≤ ${gate.rpe} + pain ≤ ${gate.pain}/10 × ${need} (incl. ≥1 HARD-tier session)` };
   }
   if (gate.type === "PAIN_FREE_WEEKS"){
     const weeks = new Set();
+    let hasHardInQualifying = false;
     for (const h of completed){
       if ((h.painBack ?? 99) > gate.pain) continue;
       if ((h.painShoulder ?? 99) > gate.pain) continue;
       const wk = isoWeekKey(h.date);
       if (wk) weeks.add(wk);
+      if (isHard(h)) hasHardInQualifying = true;
     }
-    const cleared = weeks.size >= gate.weeks;
-    return { cleared, progress:`${Math.min(weeks.size, gate.weeks)}/${gate.weeks}`, note:`${gate.weeks} pain-free weeks (pain ≤ ${gate.pain}/10) — phase transition` };
+    const weeksHit  = weeks.size >= gate.weeks;
+    const cleared   = weeksHit && hasHardInQualifying;
+    const suffix    = weeksHit && !hasHardInQualifying ? " · awaiting HARD-tier confirmation" : "";
+    return { cleared, progress:`${Math.min(weeks.size, gate.weeks)}/${gate.weeks}${suffix}`, note:`${gate.weeks} pain-free weeks (pain ≤ ${gate.pain}/10) + ≥1 HARD-tier session — phase transition` };
   }
   return { cleared:false, progress:"?", note:"unknown gate type" };
 }

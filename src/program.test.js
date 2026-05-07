@@ -63,36 +63,78 @@ test("RPE_BELOW: missing topRPE is treated as fail", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 test("RPE_PAIN: pain spike on a session breaks the streak", () => {
   const r = evaluateGate(G.rpePain(7.5, 2, 2), [
-    { completed:true, topRPE:7, painBack:3, painShoulder:0 },
-    { completed:true, topRPE:7, painBack:1, painShoulder:0 },
+    { completed:true, topRPE:7, painBack:3, painShoulder:0, tier:"HARD" },
+    { completed:true, topRPE:7, painBack:1, painShoulder:0, tier:"HARD" },
   ]);
   assert.equal(r.cleared, false);
 });
 
-test("RPE_PAIN: clears when both RPE and pain stay under thresholds", () => {
+test("RPE_PAIN: clears when both RPE and pain stay under thresholds (with HARD)", () => {
   const r = evaluateGate(G.rpePain(7.5, 2, 2), [
-    { completed:true, topRPE:7, painBack:1, painShoulder:0 },
-    { completed:true, topRPE:7, painBack:2, painShoulder:1 },
+    { completed:true, topRPE:7, painBack:1, painShoulder:0, tier:"HARD" },
+    { completed:true, topRPE:7, painBack:2, painShoulder:1, tier:"HARD" },
   ]);
   assert.equal(r.cleared, true);
 });
 
 test("RPE_PAIN: shoulder pain alone breaks the gate", () => {
   const r = evaluateGate(G.rpePain(7.5, 2, 2), [
-    { completed:true, topRPE:7, painBack:0, painShoulder:5 },
-    { completed:true, topRPE:7, painBack:0, painShoulder:0 },
+    { completed:true, topRPE:7, painBack:0, painShoulder:5, tier:"HARD" },
+    { completed:true, topRPE:7, painBack:0, painShoulder:0, tier:"HARD" },
   ]);
   assert.equal(r.cleared, false);
+});
+
+test("RPE_PAIN: MODERATE-only sessions do not clear; gate awaits HARD confirmation", () => {
+  const r = evaluateGate(G.rpePain(7.5, 2, 2), [
+    { completed:true, topRPE:6, painBack:1, painShoulder:0, tier:"MODERATE" },
+    { completed:true, topRPE:6, painBack:1, painShoulder:0, tier:"MODERATE" },
+  ]);
+  assert.equal(r.cleared, false);
+  assert.match(r.progress, /awaiting HARD-tier confirmation/);
+});
+
+test("RPE_PAIN: at least one HARD session in the window unlocks the gate", () => {
+  const r = evaluateGate(G.rpePain(7.5, 2, 2), [
+    { completed:true, topRPE:6, painBack:1, painShoulder:0, tier:"MODERATE" },
+    { completed:true, topRPE:7, painBack:1, painShoulder:0, tier:"HARD"     },
+  ]);
+  assert.equal(r.cleared, true);
+});
+
+test("RPE_PAIN: legacy entries with no tier are treated as HARD (backwards compat)", () => {
+  const r = evaluateGate(G.rpePain(7.5, 2, 2), [
+    { completed:true, topRPE:7, painBack:1, painShoulder:0 },
+    { completed:true, topRPE:7, painBack:1, painShoulder:0 },
+  ]);
+  assert.equal(r.cleared, true);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // evaluateGate — PAIN_FREE_WEEKS
 // ─────────────────────────────────────────────────────────────────────────────
-test("PAIN_FREE_WEEKS: clears when distinct pain-free ISO weeks ≥ target", () => {
+test("PAIN_FREE_WEEKS: clears when distinct pain-free ISO weeks ≥ target (legacy entries treated as HARD)", () => {
   const r = evaluateGate(G.weeks(3, 2), [
     { completed:true, date:"2026-04-06", painBack:1, painShoulder:0 },
     { completed:true, date:"2026-04-13", painBack:0, painShoulder:1 },
     { completed:true, date:"2026-04-20", painBack:2, painShoulder:0 },
+  ]);
+  assert.equal(r.cleared, true);
+});
+
+test("PAIN_FREE_WEEKS: MODERATE-only weeks await HARD confirmation", () => {
+  const r = evaluateGate(G.weeks(2, 2), [
+    { completed:true, date:"2026-04-06", painBack:0, painShoulder:0, tier:"MODERATE" },
+    { completed:true, date:"2026-04-13", painBack:0, painShoulder:0, tier:"MODERATE" },
+  ]);
+  assert.equal(r.cleared, false);
+  assert.match(r.progress, /awaiting HARD-tier confirmation/);
+});
+
+test("PAIN_FREE_WEEKS: any HARD session inside the qualifying window unlocks the gate", () => {
+  const r = evaluateGate(G.weeks(2, 2), [
+    { completed:true, date:"2026-04-06", painBack:0, painShoulder:0, tier:"MODERATE" },
+    { completed:true, date:"2026-04-13", painBack:0, painShoulder:0, tier:"HARD"     },
   ]);
   assert.equal(r.cleared, true);
 });

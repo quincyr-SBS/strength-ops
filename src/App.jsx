@@ -17,7 +17,7 @@ Program model: open-ended macro cycle Block A → B → C → D. Each exercise a
 Core rules:
 - Protein: 1g/lb bodyweight minimum, 40-50g at first meal, creatine 3-5g daily always
 - Training: protect the spine, Zone 2 at ~133 bpm, progressive overload without ego
-- Sleep: Oura readiness 85+ = train hard, 70-84 = moderate, below 70 = recovery only
+- Sleep: Oura readiness 80+ = train hard, 70-79 = moderate (80% loads), below 70 = recovery only
 - HRV dropping 3+ days = cut volume. Elevated resting HR 5+ bpm = Zone 2 or rest
 - Block A: trap-bar high handle DL, goblet box squat, DB bench/OHP, accessory curls
 - Block B unlocks SSB squat + seated BB OHP + shoulder prehab — gated on pain-free weeks
@@ -29,8 +29,8 @@ Always give specific numbers. Reference current block, current exercise step, an
 // TIER CONFIG
 // ─────────────────────────────────────────────────────────────────────────────
 const TIER_CONFIG = {
-  HARD:     { label:"TRAIN HARD",    range:"READINESS ≥ 85", color:"#4ade80", bg:"rgba(74,222,128,0.08)",  border:"#4ade80",  desc:"Full intensity. Progressive overload. Hit PRs." },
-  MODERATE: { label:"MODERATE",      range:"READINESS 70–84", color:"#facc15", bg:"rgba(250,204,21,0.08)",  border:"#facc15",  desc:"Sub-maximal effort. Stay within RPE targets. No new PRs." },
+  HARD:     { label:"TRAIN HARD",    range:"READINESS ≥ 80", color:"#4ade80", bg:"rgba(74,222,128,0.08)",  border:"#4ade80",  desc:"Full intensity. Progressive overload. Heavy compounds confirm gate progress." },
+  MODERATE: { label:"MODERATE",      range:"READINESS 70–79", color:"#facc15", bg:"rgba(250,204,21,0.08)",  border:"#facc15",  desc:"Sub-maximal effort (80% loads). Builds work capacity but heavy compounds need a HARD day to advance." },
   RECOVERY: { label:"RECOVERY ONLY", range:"READINESS < 70",  color:"#f87171", bg:"rgba(248,113,113,0.08)", border:"#f87171",  desc:"Zone 2 walk, mobility, McGill Big 3. No loading." },
 };
 
@@ -397,7 +397,7 @@ const DAY_ORDER = ["SUN","MON","TUE","WED","THU","FRI","SAT"];
 // REACT-LAYER HELPERS (impure / DOM-aware)
 // Pure helpers (evaluateGate, getVisibleExercises, etc.) live in ./program.js
 // ─────────────────────────────────────────────────────────────────────────────
-function getTier(r){ return r>=85?"HARD":r>=70?"MODERATE":"RECOVERY"; }
+function getTier(r){ return r>=80?"HARD":r>=70?"MODERATE":"RECOVERY"; }
 function getHRVAlert(avg,today){ if(!avg||!today)return null; const d=avg-today; return d>=3?`HRV DOWN ${d}MS VS 7-DAY — CUT VOLUME`:null; }
 function getRHRAlert(base,today){ if(!base||!today)return null; const r=today-base; return r>=5?`RHR +${r} BPM ABOVE BASELINE — ZONE 2 OR REST`:null; }
 function todayKey(){ return DAY_ORDER[new Date().getDay()]; }
@@ -451,7 +451,7 @@ function SetRow({ setNum, reps, load, rpe, mult, actual, onChange }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // EXERCISE CARD
 // ─────────────────────────────────────────────────────────────────────────────
-function ExerciseCard({ ex, exState, mult, painBack, painShoulder, data, onSetUpdate, onMetaUpdate, onLogSession, onAdvanceStep }) {
+function ExerciseCard({ ex, exState, mult, tier, painBack, painShoulder, data, onSetUpdate, onMetaUpdate, onLogSession, onAdvanceStep }) {
   const [open, setOpen] = useState(true);
   const stepIdx   = Math.min(exState.stepIdx, ex.progression.length - 1);
   const step      = ex.progression[stepIdx];
@@ -521,7 +521,7 @@ function ExerciseCard({ ex, exState, mult, painBack, painShoulder, data, onSetUp
                   disabled={topRPEInput === "" || mult === 0}
                   onClick={()=>onLogSession({
                     topRPE: Number(topRPEInput),
-                    painBack, painShoulder,
+                    painBack, painShoulder, tier,
                   })}
                   style={{background:topRPEInput!==""?"#2d4a2d":"#1a2e1a",border:"1px solid #6aaa6a",color:"#6aaa6a",padding:"6px 14px",cursor:topRPEInput!==""?"pointer":"default",fontSize:8,letterSpacing:2,...MONO}}>
                   LOG SESSION →
@@ -697,6 +697,7 @@ export default function App() {
         topRPE: payload.topRPE,
         painBack: payload.painBack ?? 0,
         painShoulder: payload.painShoulder ?? 0,
+        tier: payload.tier ?? "HARD",
         completed: true,
       };
       // Replace today's entry if already logged for this step (idempotent on same day)
@@ -923,8 +924,9 @@ export default function App() {
             {showCalibrate && (
               <div style={{background:"#0d130d",border:"1px solid #2d4a2d",padding:12,marginBottom:12}}>
                 <div style={{fontSize:9,color:"#7a9a7a",letterSpacing:1,marginBottom:10,...MONO}}>
-                  Enter your current working weight per lift. Leave blank if unsure. Program will jump
-                  each filled exercise to its closest progression step and reset that step's gate.
+                  Enter your current TOP WORKING SET — what you can do for the prescribed sets×reps at RPE
+                  ~7–8. NOT a 1-rep max. Leave blank if unsure. Program will jump each filled exercise to
+                  the closest progression step and reset that step's gate.
                 </div>
                 {DAY_ORDER.map(dk=>{
                   const dDay = PROGRAM[dk];
@@ -941,7 +943,7 @@ export default function App() {
                           <div key={ex.id} style={{display:"grid",gridTemplateColumns:"1.6fr 70px 1fr 110px",gap:8,alignItems:"center",padding:"3px 0",borderBottom:"1px solid #0f1f0f"}}>
                             <div style={{fontSize:10,color:"#c8d4c8",...MONO}}>{ex.name}</div>
                             <div style={{fontSize:8,color:"#4a6a4a",letterSpacing:1,...MONO}}>{st.stepIdx+1}/{ex.progression.length}</div>
-                            <div style={{fontSize:9,color:"#6aaa6a",...MONO}}>now: {curStep.load}</div>
+                            <div style={{fontSize:9,color:"#6aaa6a",...MONO}}>now: {curStep.sets}×{curStep.reps} @ {curStep.load}</div>
                             <input type="number" placeholder="current lb" min={0}
                               value={calibrateInput[ex.id] ?? ""}
                               onChange={e=>setCalibrateInput(p=>({...p,[ex.id]:e.target.value}))}
@@ -1082,7 +1084,7 @@ export default function App() {
                 {tier!=="RECOVERY"&&getVisibleExercises(day.exercises, currentBlock).map(ex=>(
                   <ExerciseCard key={ex.id} ex={ex}
                     exState={getStepState(stepState, ex.id)}
-                    mult={mult} painBack={backPain} painShoulder={shoulderPain}
+                    mult={mult} tier={tier} painBack={backPain} painShoulder={shoulderPain}
                     data={(sessionData[selDay]||{})[ex.id]||{}}
                     onSetUpdate={(si, val)=> updateSet(selDay, ex.id, si, val)}
                     onMetaUpdate={(key, val)=> setSessionData(prev=>{
