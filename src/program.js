@@ -50,6 +50,9 @@ export function isoWeekKey(dateStr){
 export function evaluateGate(gate, stepHistory){
   if (!gate) return { cleared:false, progress:"—", note:"maintenance — no progression gate" };
   const completed = (stepHistory||[]).filter(h => h.completed);
+  // Legacy entries logged before tier-tracking landed are treated as HARD so
+  // existing progress doesn't regress when the HARD-confirmation rule lands.
+  const isHard = (h) => (h.tier ?? "HARD") === "HARD";
   if (gate.type === "RPE_BELOW"){
     const need   = gate.sessions;
     const lastN  = completed.slice(-need);
@@ -65,19 +68,31 @@ export function evaluateGate(gate, stepHistory){
       (h.painBack ?? 99) <= gate.pain &&
       (h.painShoulder ?? 99) <= gate.pain
     ).length;
-    const cleared= lastN.length >= need && pass === need;
-    return { cleared, progress:`${pass}/${need}`, note:`RPE ≤ ${gate.rpe} + pain ≤ ${gate.pain}/10 × ${need}` };
+    const allClean    = lastN.length >= need && pass === need;
+    const hasHard     = lastN.some(isHard);
+    const cleared     = allClean && hasHard;
+    const suffix      = allClean && !hasHard ? " · awaiting HARD-tier confirmation" : "";
+    return { cleared, progress:`${pass}/${need}${suffix}`, note:`RPE ≤ ${gate.rpe} + pain ≤ ${gate.pain}/10 × ${need} (incl. ≥1 HARD-tier session)` };
   }
   if (gate.type === "PAIN_FREE_WEEKS"){
-    const weeks = new Set();
+    // Track HARD-ness per ISO week. The qualifying window is the most recent
+    // `gate.weeks` distinct pain-free weeks; HARD must appear within that
+    // window (not any HARD across all history at this step).
+    const weekHard = new Map();  // isoWeek -> bool (any HARD session that week)
     for (const h of completed){
       if ((h.painBack ?? 99) > gate.pain) continue;
       if ((h.painShoulder ?? 99) > gate.pain) continue;
       const wk = isoWeekKey(h.date);
-      if (wk) weeks.add(wk);
+      if (!wk) continue;
+      weekHard.set(wk, (weekHard.get(wk) || false) || isHard(h));
     }
-    const cleared = weeks.size >= gate.weeks;
-    return { cleared, progress:`${Math.min(weeks.size, gate.weeks)}/${gate.weeks}`, note:`${gate.weeks} pain-free weeks (pain ≤ ${gate.pain}/10) — phase transition` };
+    const allWeeks      = [...weekHard.keys()].sort();   // ISO keys sort lexicographically
+    const recentWindow  = allWeeks.slice(-gate.weeks);   // (renamed from `window` to avoid shadowing the global)
+    const weeksHit      = recentWindow.length >= gate.weeks;
+    const hardInWindow  = recentWindow.some(wk => weekHard.get(wk));
+    const cleared       = weeksHit && hardInWindow;
+    const suffix        = weeksHit && !hardInWindow ? " · awaiting HARD-tier confirmation in window" : "";
+    return { cleared, progress:`${Math.min(allWeeks.length, gate.weeks)}/${gate.weeks}${suffix}`, note:`${gate.weeks} pain-free weeks (pain ≤ ${gate.pain}/10) with ≥1 HARD session in window — phase transition` };
   }
   return { cleared:false, progress:"?", note:"unknown gate type" };
 }
@@ -149,10 +164,13 @@ export function evaluateDeloadTriggers(readinessHistory){
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LOAD SCALING (MODERATE tier scales numeric loads to 80%)
+// Only scales numbers immediately followed by "lb" so that time strings
+// (e.g. "× 30s") and count strings (e.g. "4 directions") in the load field
+// are left alone.
 // ─────────────────────────────────────────────────────────────────────────────
 export function scaleLoad(load, mult) {
   if (mult === 1.0) return load;
-  return load.replace(/(\d+)/g, (m) => Math.round(parseInt(m)*mult/5)*5);
+  return load.replace(/(\d+)(?=\s*lb)/g, (m) => Math.round(parseInt(m)*mult/5)*5);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

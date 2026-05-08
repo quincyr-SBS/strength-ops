@@ -17,7 +17,7 @@ Program model: open-ended macro cycle Block A → B → C → D. Each exercise a
 Core rules:
 - Protein: 1g/lb bodyweight minimum, 40-50g at first meal, creatine 3-5g daily always
 - Training: protect the spine, Zone 2 at ~133 bpm, progressive overload without ego
-- Sleep: Oura readiness 85+ = train hard, 70-84 = moderate, below 70 = recovery only
+- Sleep: Oura readiness 80+ = train hard, 70-79 = moderate (80% loads), below 70 = recovery only
 - HRV dropping 3+ days = cut volume. Elevated resting HR 5+ bpm = Zone 2 or rest
 - Block A: trap-bar high handle DL, goblet box squat, DB bench/OHP, accessory curls
 - Block B unlocks SSB squat + seated BB OHP + shoulder prehab — gated on pain-free weeks
@@ -29,8 +29,8 @@ Always give specific numbers. Reference current block, current exercise step, an
 // TIER CONFIG
 // ─────────────────────────────────────────────────────────────────────────────
 const TIER_CONFIG = {
-  HARD:     { label:"TRAIN HARD",    range:"READINESS ≥ 85", color:"#4ade80", bg:"rgba(74,222,128,0.08)",  border:"#4ade80",  desc:"Full intensity. Progressive overload. Hit PRs." },
-  MODERATE: { label:"MODERATE",      range:"READINESS 70–84", color:"#facc15", bg:"rgba(250,204,21,0.08)",  border:"#facc15",  desc:"Sub-maximal effort. Stay within RPE targets. No new PRs." },
+  HARD:     { label:"TRAIN HARD",    range:"READINESS ≥ 80", color:"#4ade80", bg:"rgba(74,222,128,0.08)",  border:"#4ade80",  desc:"Full intensity. Progressive overload. Heavy compounds confirm gate progress." },
+  MODERATE: { label:"MODERATE",      range:"READINESS 70–79", color:"#facc15", bg:"rgba(250,204,21,0.08)",  border:"#facc15",  desc:"Sub-maximal effort (80% loads). Builds work capacity but heavy compounds need a HARD day to advance." },
   RECOVERY: { label:"RECOVERY ONLY", range:"READINESS < 70",  color:"#f87171", bg:"rgba(248,113,113,0.08)", border:"#f87171",  desc:"Zone 2 walk, mobility, McGill Big 3. No loading." },
 };
 
@@ -359,30 +359,77 @@ const PROGRAM = {
     ],
   },
   SAT: {
-    label: "SATURDAY", focus: "LIGHT VOLUME / ACTIVE RECOVERY", type: "lift+cardio",
-    cardio: [{ name: "ZONE 2 WALK", duration: "30 min", target: "120–128 bpm", note: "Easy walk. This is recovery, not training." }],
-    warmup: ["Hip flexor stretch — 60s/side", "Band pull-apart — 2×15"],
-    note: "LIGHT VOLUME DAY — active recovery. No lifting. RPE 6 cap on carries.",
+    label: "SATURDAY", focus: "FUNCTIONAL / COMBAT MOBILITY", type: "lift+cardio",
+    cardio: [{ name: "ZONE 2 WALK", duration: "20 min", target: "120–128 bpm", note: "Easy walk. Cooldown after the mobility work." }],
+    warmup: ["World's Greatest Stretch — 5/side", "90/90 Hip Transitions — 8/side", "Scapular CARs — 8/direction"],
+    note: "FUNCTIONAL DAY — practical strength + mobility for fighting / martial arts. Light-to-mid loads, higher reps. RPE 5–7 cap. Movement quality > load. KB preferred where listed; DB works fine as substitute.",
     exercises: [
       {
-        id:"light_carry_sat", block:"A", name:"LIGHT FARMER CARRY",
-        cue:"~50% of Friday's load. Tall posture, easy steps. This is recovery, not training. Advance only when load truly feels light (RPE ≤5).",
+        id:"tgu_sat", block:"A", name:"TURKISH GET-UP",
+        cue:"KB or DB. One slow rep = full ground-to-stand-to-ground. Lock the bell overhead, eyes on it the whole time. Crown jewel for shoulder mobility under load + hip integration.",
         progression: [
-          S(3,1,"40 lb / hand × 30m",40,"RPE 5–6 cap", G.rpe(5, 2)),
-          S(3,1,"50 lb / hand × 30m",50,"RPE 5–6 cap", G.rpe(5, 2)),
-          S(3,1,"60 lb / hand × 30m",60,"RPE 5–6 cap", G.rpe(5, 2)),
+          S(3,1,"25 lb KB / side",25,"RPE 5 — pattern", G.rpe(5, 2)),
+          S(3,1,"35 lb KB / side",35,"RPE 5",          G.rpe(5, 2)),
+          S(4,1,"45 lb KB / side",45,"RPE 6",          G.rpe(6, 2)),
+          S(5,1,"53 lb KB / side",53,"RPE 6",          G.rpe(6, 2)),
+          S(5,1,"62 lb KB / side",62,"RPE 6–7",        G.rpe(7, 2)),
+          S(5,1,"70 lb KB / side",70,"RPE 7",          G.rpe(7, 2)),
         ],
       },
       {
-        id:"upper_back_sat", block:"A", name:"BAND PULL-APART + FACE PULL",
-        cue:"Postural maintenance for shoulder health. Strict, controlled, no momentum.",
+        id:"cossack_sat", block:"A", name:"COSSACK SQUAT",
+        cue:"Heel down, opposite leg straight. Sit deep, push knee out, drive up through working heel. Hip mobility + lateral leg strength for sprawls and kicking range.",
         progression: [
-          S(3,20,"band + 50 lb cable",50,"strict", G.none()),
+          S(3,10,"bodyweight",       0, "RPE 5", G.rpe(5, 2)),
+          S(3,12,"bodyweight",       0, "RPE 5", G.rpe(5, 2)),
+          S(3,10,"25 lb DB goblet", 25, "RPE 6", G.rpe(6, 2)),
+          S(3,12,"35 lb DB goblet", 35, "RPE 6", G.rpe(6, 2)),
+          S(3,12,"45 lb DB goblet", 45, "RPE 6", G.rpe(6, 2)),
+          S(3,12,"55 lb DB goblet", 55, "RPE 7", G.rpe(7, 2)),
+        ],
+      },
+      {
+        id:"windmill_sat", block:"A", name:"KETTLEBELL WINDMILL",
+        cue:"KB locked overhead, eyes on it. Hinge to opposite foot, keep front leg straight. Light. Builds shoulder mobility under load + oblique/hamstring length — defends arm bars and kimuras.",
+        progression: [
+          S(2,8,"15 lb KB / side", 15, "RPE 5", G.rpe(5, 2)),
+          S(2,8,"20 lb KB / side", 20, "RPE 5", G.rpe(5, 2)),
+          S(3,8,"25 lb KB / side", 25, "RPE 6", G.rpe(6, 2)),
+          S(3,8,"30 lb KB / side", 30, "RPE 6", G.rpe(6, 2)),
+          S(3,8,"35 lb KB / side", 35, "RPE 6–7", G.rpe(7, 2)),
+        ],
+      },
+      {
+        id:"woodchop_sat", block:"A", name:"CABLE WOOD CHOP (HIGH-TO-LOW + LOW-TO-HIGH)",
+        cue:"Controlled tempo — NOT explosive (back history). Pivot through hips, arms straight. Alternate high-to-low and low-to-high each set. Rotational power for strikes, takedowns, throws.",
+        progression: [
+          S(3,12,"30 lb / side", 30, "RPE 5 — controlled", G.rpe(5, 2)),
+          S(3,12,"40 lb / side", 40, "RPE 6 — controlled", G.rpe(6, 2)),
+          S(3,15,"50 lb / side", 50, "RPE 6", G.rpe(6, 2)),
+          S(3,15,"60 lb / side", 60, "RPE 6", G.rpe(6, 2)),
+          S(4,15,"70 lb / side", 70, "RPE 7", G.rpe(7, 2)),
+        ],
+      },
+      {
+        id:"pinch_carry_sat", block:"A", name:"PLATE PINCH CARRY",
+        cue:"Pinch two plates together by the smooth side, walk tall. Grip endurance for clinch, gi grip, wrist control. Replaces farmer carry on Sat — more grip-specific.",
+        progression: [
+          S(3,1,"25 lb plates × 30s", 25, "RPE 5", G.rpe(5, 2)),
+          S(3,1,"25 lb plates × 40s", 25, "RPE 6", G.rpe(6, 2)),
+          S(3,1,"35 lb plates × 40s", 35, "RPE 6", G.rpe(6, 2)),
+          S(3,1,"45 lb plates × 45s", 45, "RPE 7", G.rpe(7, 2)),
+        ],
+      },
+      {
+        id:"neck_iso_sat", block:"A", name:"NECK ISOMETRICS (3-WAY)",
+        cue:"Front, back, both sides — 30s each direction. Hand resistance only. NO neck bridges (back history). Builds tolerance for punches and takedown impact.",
+        progression: [
+          S(3,1,"30s × 4 directions, hand resistance", 0, "strict", G.none()),
         ],
       },
       {
         id:"big3_sat", block:"A", name:"McGILL BIG 3",
-        cue:"Curl-up, side plank, bird-dog. 3×10 each. Non-negotiable spine work.",
+        cue:"Curl-up, side plank, bird-dog. 3×10 each. Spine endurance is the foundation for everything else on this list.",
         progression: [
           S(3,10,"bodyweight", 0,"strict", G.none()),
         ],
@@ -397,7 +444,7 @@ const DAY_ORDER = ["SUN","MON","TUE","WED","THU","FRI","SAT"];
 // REACT-LAYER HELPERS (impure / DOM-aware)
 // Pure helpers (evaluateGate, getVisibleExercises, etc.) live in ./program.js
 // ─────────────────────────────────────────────────────────────────────────────
-function getTier(r){ return r>=85?"HARD":r>=70?"MODERATE":"RECOVERY"; }
+function getTier(r){ return r>=80?"HARD":r>=70?"MODERATE":"RECOVERY"; }
 function getHRVAlert(avg,today){ if(!avg||!today)return null; const d=avg-today; return d>=3?`HRV DOWN ${d}MS VS 7-DAY — CUT VOLUME`:null; }
 function getRHRAlert(base,today){ if(!base||!today)return null; const r=today-base; return r>=5?`RHR +${r} BPM ABOVE BASELINE — ZONE 2 OR REST`:null; }
 function todayKey(){ return DAY_ORDER[new Date().getDay()]; }
@@ -451,7 +498,7 @@ function SetRow({ setNum, reps, load, rpe, mult, actual, onChange }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // EXERCISE CARD
 // ─────────────────────────────────────────────────────────────────────────────
-function ExerciseCard({ ex, exState, mult, painBack, painShoulder, data, onSetUpdate, onMetaUpdate, onLogSession, onAdvanceStep }) {
+function ExerciseCard({ ex, exState, mult, tier, painBack, painShoulder, data, onSetUpdate, onMetaUpdate, onLogSession, onAdvanceStep }) {
   const [open, setOpen] = useState(true);
   const stepIdx   = Math.min(exState.stepIdx, ex.progression.length - 1);
   const step      = ex.progression[stepIdx];
@@ -521,7 +568,7 @@ function ExerciseCard({ ex, exState, mult, painBack, painShoulder, data, onSetUp
                   disabled={topRPEInput === "" || mult === 0}
                   onClick={()=>onLogSession({
                     topRPE: Number(topRPEInput),
-                    painBack, painShoulder,
+                    painBack, painShoulder, tier,
                   })}
                   style={{background:topRPEInput!==""?"#2d4a2d":"#1a2e1a",border:"1px solid #6aaa6a",color:"#6aaa6a",padding:"6px 14px",cursor:topRPEInput!==""?"pointer":"default",fontSize:8,letterSpacing:2,...MONO}}>
                   LOG SESSION →
@@ -697,6 +744,7 @@ export default function App() {
         topRPE: payload.topRPE,
         painBack: payload.painBack ?? 0,
         painShoulder: payload.painShoulder ?? 0,
+        tier: payload.tier ?? "HARD",
         completed: true,
       };
       // Replace today's entry if already logged for this step (idempotent on same day)
@@ -923,8 +971,9 @@ export default function App() {
             {showCalibrate && (
               <div style={{background:"#0d130d",border:"1px solid #2d4a2d",padding:12,marginBottom:12}}>
                 <div style={{fontSize:9,color:"#7a9a7a",letterSpacing:1,marginBottom:10,...MONO}}>
-                  Enter your current working weight per lift. Leave blank if unsure. Program will jump
-                  each filled exercise to its closest progression step and reset that step's gate.
+                  Enter your current TOP WORKING SET — what you can do for the prescribed sets×reps at RPE
+                  ~7–8. NOT a 1-rep max. Leave blank if unsure. Program will jump each filled exercise to
+                  the closest progression step and reset that step's gate.
                 </div>
                 {DAY_ORDER.map(dk=>{
                   const dDay = PROGRAM[dk];
@@ -941,7 +990,7 @@ export default function App() {
                           <div key={ex.id} style={{display:"grid",gridTemplateColumns:"1.6fr 70px 1fr 110px",gap:8,alignItems:"center",padding:"3px 0",borderBottom:"1px solid #0f1f0f"}}>
                             <div style={{fontSize:10,color:"#c8d4c8",...MONO}}>{ex.name}</div>
                             <div style={{fontSize:8,color:"#4a6a4a",letterSpacing:1,...MONO}}>{st.stepIdx+1}/{ex.progression.length}</div>
-                            <div style={{fontSize:9,color:"#6aaa6a",...MONO}}>now: {curStep.load}</div>
+                            <div style={{fontSize:9,color:"#6aaa6a",...MONO}}>now: {curStep.sets}×{curStep.reps} @ {curStep.load}</div>
                             <input type="number" placeholder="current lb" min={0}
                               value={calibrateInput[ex.id] ?? ""}
                               onChange={e=>setCalibrateInput(p=>({...p,[ex.id]:e.target.value}))}
@@ -1082,7 +1131,7 @@ export default function App() {
                 {tier!=="RECOVERY"&&getVisibleExercises(day.exercises, currentBlock).map(ex=>(
                   <ExerciseCard key={ex.id} ex={ex}
                     exState={getStepState(stepState, ex.id)}
-                    mult={mult} painBack={backPain} painShoulder={shoulderPain}
+                    mult={mult} tier={tier} painBack={backPain} painShoulder={shoulderPain}
                     data={(sessionData[selDay]||{})[ex.id]||{}}
                     onSetUpdate={(si, val)=> updateSet(selDay, ex.id, si, val)}
                     onMetaUpdate={(key, val)=> setSessionData(prev=>{
