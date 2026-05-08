@@ -87,9 +87,9 @@ export function evaluateGate(gate, stepHistory){
       weekHard.set(wk, (weekHard.get(wk) || false) || isHard(h));
     }
     const allWeeks      = [...weekHard.keys()].sort();   // ISO keys sort lexicographically
-    const window        = allWeeks.slice(-gate.weeks);
-    const weeksHit      = window.length >= gate.weeks;
-    const hardInWindow  = window.some(wk => weekHard.get(wk));
+    const recentWindow  = allWeeks.slice(-gate.weeks);   // (renamed from `window` to avoid shadowing the global)
+    const weeksHit      = recentWindow.length >= gate.weeks;
+    const hardInWindow  = recentWindow.some(wk => weekHard.get(wk));
     const cleared       = weeksHit && hardInWindow;
     const suffix        = weeksHit && !hardInWindow ? " · awaiting HARD-tier confirmation in window" : "";
     return { cleared, progress:`${Math.min(allWeeks.length, gate.weeks)}/${gate.weeks}${suffix}`, note:`${gate.weeks} pain-free weeks (pain ≤ ${gate.pain}/10) with ≥1 HARD session in window — phase transition` };
