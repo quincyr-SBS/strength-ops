@@ -75,19 +75,24 @@ export function evaluateGate(gate, stepHistory){
     return { cleared, progress:`${pass}/${need}${suffix}`, note:`RPE ≤ ${gate.rpe} + pain ≤ ${gate.pain}/10 × ${need} (incl. ≥1 HARD-tier session)` };
   }
   if (gate.type === "PAIN_FREE_WEEKS"){
-    const weeks = new Set();
-    let hasHardInQualifying = false;
+    // Track HARD-ness per ISO week. The qualifying window is the most recent
+    // `gate.weeks` distinct pain-free weeks; HARD must appear within that
+    // window (not any HARD across all history at this step).
+    const weekHard = new Map();  // isoWeek -> bool (any HARD session that week)
     for (const h of completed){
       if ((h.painBack ?? 99) > gate.pain) continue;
       if ((h.painShoulder ?? 99) > gate.pain) continue;
       const wk = isoWeekKey(h.date);
-      if (wk) weeks.add(wk);
-      if (isHard(h)) hasHardInQualifying = true;
+      if (!wk) continue;
+      weekHard.set(wk, (weekHard.get(wk) || false) || isHard(h));
     }
-    const weeksHit  = weeks.size >= gate.weeks;
-    const cleared   = weeksHit && hasHardInQualifying;
-    const suffix    = weeksHit && !hasHardInQualifying ? " · awaiting HARD-tier confirmation" : "";
-    return { cleared, progress:`${Math.min(weeks.size, gate.weeks)}/${gate.weeks}${suffix}`, note:`${gate.weeks} pain-free weeks (pain ≤ ${gate.pain}/10) + ≥1 HARD-tier session — phase transition` };
+    const allWeeks      = [...weekHard.keys()].sort();   // ISO keys sort lexicographically
+    const window        = allWeeks.slice(-gate.weeks);
+    const weeksHit      = window.length >= gate.weeks;
+    const hardInWindow  = window.some(wk => weekHard.get(wk));
+    const cleared       = weeksHit && hardInWindow;
+    const suffix        = weeksHit && !hardInWindow ? " · awaiting HARD-tier confirmation in window" : "";
+    return { cleared, progress:`${Math.min(allWeeks.length, gate.weeks)}/${gate.weeks}${suffix}`, note:`${gate.weeks} pain-free weeks (pain ≤ ${gate.pain}/10) with ≥1 HARD session in window — phase transition` };
   }
   return { cleared:false, progress:"?", note:"unknown gate type" };
 }
@@ -159,10 +164,13 @@ export function evaluateDeloadTriggers(readinessHistory){
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LOAD SCALING (MODERATE tier scales numeric loads to 80%)
+// Only scales numbers immediately followed by "lb" so that time strings
+// (e.g. "× 30s") and count strings (e.g. "4 directions") in the load field
+// are left alone.
 // ─────────────────────────────────────────────────────────────────────────────
 export function scaleLoad(load, mult) {
   if (mult === 1.0) return load;
-  return load.replace(/(\d+)/g, (m) => Math.round(parseInt(m)*mult/5)*5);
+  return load.replace(/(\d+)(?=\s*lb)/g, (m) => Math.round(parseInt(m)*mult/5)*5);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

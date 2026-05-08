@@ -139,6 +139,32 @@ test("PAIN_FREE_WEEKS: any HARD session inside the qualifying window unlocks the
   assert.equal(r.cleared, true);
 });
 
+test("PAIN_FREE_WEEKS: stale HARD outside the recent window does NOT clear", () => {
+  // 5 pain-free weeks; gate wants 2. Only the OLDEST week had HARD.
+  // The qualifying window is the 2 most recent weeks — both MODERATE.
+  // Gate must NOT clear (otherwise old HARD history "carries" forever).
+  const r = evaluateGate(G.weeks(2, 2), [
+    { completed:true, date:"2026-03-02", painBack:0, painShoulder:0, tier:"HARD"     },
+    { completed:true, date:"2026-03-09", painBack:0, painShoulder:0, tier:"MODERATE" },
+    { completed:true, date:"2026-03-16", painBack:0, painShoulder:0, tier:"MODERATE" },
+    { completed:true, date:"2026-03-23", painBack:0, painShoulder:0, tier:"MODERATE" },
+    { completed:true, date:"2026-03-30", painBack:0, painShoulder:0, tier:"MODERATE" },
+  ]);
+  assert.equal(r.cleared, false);
+  assert.match(r.progress, /awaiting HARD-tier confirmation in window/);
+});
+
+test("PAIN_FREE_WEEKS: HARD anywhere in the recent window clears", () => {
+  // gate wants 3 weeks. Most recent 3 are MOD/HARD/MOD → HARD is in window.
+  const r = evaluateGate(G.weeks(3, 2), [
+    { completed:true, date:"2026-03-02", painBack:0, painShoulder:0, tier:"HARD"     },
+    { completed:true, date:"2026-03-09", painBack:0, painShoulder:0, tier:"MODERATE" },
+    { completed:true, date:"2026-03-16", painBack:0, painShoulder:0, tier:"HARD"     },
+    { completed:true, date:"2026-03-23", painBack:0, painShoulder:0, tier:"MODERATE" },
+  ]);
+  assert.equal(r.cleared, true);
+});
+
 test("PAIN_FREE_WEEKS: same-week sessions count once", () => {
   const r = evaluateGate(G.weeks(3, 2), [
     { completed:true, date:"2026-04-06", painBack:1, painShoulder:0 },
@@ -363,9 +389,27 @@ test("scaleLoad: rounds to nearest 5 lb at 80%", () => {
   assert.equal(scaleLoad("110 lb",    0.8), "90 lb");  // 88 → 90
 });
 
-test("scaleLoad: scales every numeric token in the string", () => {
-  // Documents current behavior: /g flag scales all numbers, not just first.
+test("scaleLoad: scales lb-suffixed numbers, leaves rep / time numbers alone", () => {
+  // "30 lb" scales (30→25 rounded to nearest 5), "10 reps" does not — neither
+  // does the trailing 'reps' number.
   assert.equal(scaleLoad("30 lb / side × 10 reps", 0.8), "25 lb / side × 10 reps");
+});
+
+test("scaleLoad: leaves time strings (× 30s) untouched on MODERATE", () => {
+  // Sat plate-pinch carry uses time in the load string; must not get scaled.
+  assert.equal(scaleLoad("25 lb plates × 30s", 0.8), "20 lb plates × 30s");
+  assert.equal(scaleLoad("45 lb plates × 45s", 0.8), "35 lb plates × 45s");
+});
+
+test("scaleLoad: leaves count strings (4 directions) untouched on MODERATE", () => {
+  // Sat neck-iso load string has no weight at all — must pass through unchanged.
+  assert.equal(scaleLoad("30s × 4 directions, hand resistance", 0.8), "30s × 4 directions, hand resistance");
+});
+
+test("scaleLoad: scales every lb-suffixed weight in mixed strings", () => {
+  // Pre-existing "5 lb / cable 10 lb" type strings still scale all lb numbers.
+  assert.equal(scaleLoad("5 lb plates / cable 10 lb", 0.8), "5 lb plates / cable 10 lb");
+  // (5*0.8/5*5 = 5; 10*0.8/5*5 = 10 — small numbers round-trip due to /5 step)
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
