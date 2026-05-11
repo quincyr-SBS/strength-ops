@@ -49,7 +49,11 @@ export function isoWeekKey(dateStr){
 
 export function evaluateGate(gate, stepHistory){
   if (!gate) return { cleared:false, progress:"—", note:"maintenance — no progression gate" };
-  const completed = (stepHistory||[]).filter(h => h.completed);
+  // DELOAD and RECOVERY sessions are intentionally excluded — they're back-off
+  // periods that should not count toward step advancement.
+  const completed = (stepHistory||[])
+    .filter(h => h.completed)
+    .filter(h => h.tier !== "DELOAD" && h.tier !== "RECOVERY");
   // Legacy entries logged before tier-tracking landed are treated as HARD so
   // existing progress doesn't regress when the HARD-confirmation rule lands.
   const isHard = (h) => (h.tier ?? "HARD") === "HARD";
@@ -210,4 +214,78 @@ export function applyCalibration(stepState, program, calibrations){
     next[exId] = { stepIdx: newIdx, history };
   }
   return next;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELOAD WEEK — manual start / end, with a soft suggestion every N weeks.
+// Sessions logged during an active deload are tagged tier:"DELOAD" and excluded
+// from gate progression by evaluateGate.
+//
+// deloadState shape:
+//   { current: { startedOn, endsOn } | null,
+//     history: [{ startedOn, endsOn, endsOnActual? }, ...] }
+// ─────────────────────────────────────────────────────────────────────────────
+export const DELOAD_DURATION_DAYS       = 7;
+export const DELOAD_LOAD_MULT           = 0.6;
+export const DELOAD_SUGGEST_AFTER_WEEKS = 6;
+
+export function addDays(dateISO, n){
+  const d = new Date(dateISO + "T00:00:00");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0,10);
+}
+export function daysBetween(fromISO, toISO){
+  const f = new Date(fromISO + "T00:00:00");
+  const t = new Date(toISO   + "T00:00:00");
+  return Math.round((t - f) / 86400000);
+}
+
+export function getActiveDeload(deloadState, todayISO){
+  const cur = deloadState?.current;
+  if (!cur) return null;
+  // endsOn is inclusive — deload is active through that calendar day
+  if (cur.endsOn < todayISO) return null;
+  return { ...cur, daysRemaining: daysBetween(todayISO, cur.endsOn) + 1 };
+}
+
+export function startDeload(todayISO, days = DELOAD_DURATION_DAYS){
+  return { startedOn: todayISO, endsOn: addDays(todayISO, days - 1) };
+}
+
+// Move current deload (if any) into history, stamping today as actual end.
+// If no active deload, returns the state unchanged.
+export function endDeload(deloadState, todayISO){
+  const cur = deloadState?.current;
+  if (!cur) return deloadState || { current:null, history:[] };
+  return {
+    current: null,
+    history: [...(deloadState.history || []), { ...cur, endsOnActual: todayISO }],
+  };
+}
+
+// Find the earliest logged session across all exercises (used as the reference
+// point for weeksSinceLastDeload when the user has never deloaded).
+function earliestSessionDate(stepState){
+  let earliest = null;
+  for (const ex of Object.values(stepState || {})){
+    for (const h of (ex.history || [])){
+      if (!h.date) continue;
+      if (!earliest || h.date < earliest) earliest = h.date;
+    }
+  }
+  return earliest;
+}
+
+// Whole weeks since the most recent deload ended (or, if never deloaded, since
+// the earliest logged session). Returns null when the user has no training
+// history at all — no point suggesting a deload before they've trained.
+export function weeksSinceLastDeload(deloadState, stepState, todayISO){
+  const hist = deloadState?.history || [];
+  const lastDeload = hist.length ? hist[hist.length - 1] : null;
+  const referenceISO = lastDeload
+    ? (lastDeload.endsOnActual ?? lastDeload.endsOn)
+    : earliestSessionDate(stepState);
+  if (!referenceISO) return null;
+  const d = daysBetween(referenceISO, todayISO);
+  return d < 0 ? 0 : Math.floor(d / 7);
 }
