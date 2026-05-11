@@ -7,7 +7,7 @@ import {
   getVisibleExercises, getLockedPreview, evaluateDeloadTriggers,
   scaleLoad,
   applyCalibration,
-  getActiveDeload, startDeload, endDeload, weeksSinceLastDeload,
+  getActiveDeload, startDeload, endDeload, archiveExpiredDeload, weeksSinceLastDeload,
   DELOAD_DURATION_DAYS, DELOAD_LOAD_MULT, DELOAD_SUGGEST_AFTER_WEEKS,
 } from "./program";
 // ─────────────────────────────────────────────────────────────────────────────
@@ -550,7 +550,8 @@ function ExerciseCard({ ex, exState, mult, tier, painBack, painShoulder, data, o
               {blockGate && <span style={{color:"#facc15",marginLeft:6}}>· phase transition</span>}
             </div>
           )}
-          {mult < 1.0 && <div style={{padding:"4px 12px",fontSize:8,color:"#facc15",borderBottom:"1px solid #0f1f0f",...MONO}}>MODERATE TIER — LOADS SCALED TO 80%</div>}
+          {tier === "MODERATE" && <div style={{padding:"4px 12px",fontSize:8,color:"#facc15",borderBottom:"1px solid #0f1f0f",...MONO}}>MODERATE TIER — LOADS SCALED TO 80%</div>}
+          {tier === "DELOAD"   && <div style={{padding:"4px 12px",fontSize:8,color:"#fb923c",borderBottom:"1px solid #0f1f0f",...MONO}}>DELOAD WEEK — LOADS SCALED TO 60% · SESSIONS DO NOT ADVANCE GATES</div>}
           <div style={{display:"grid",gridTemplateColumns:"26px 50px 1fr 85px 1fr 90px",gap:5,padding:"4px 8px 2px",fontSize:7,letterSpacing:2,color:"#2a4a2a",borderBottom:"1px solid #0f1f0f",...MONO}}>
             <span>SET</span><span>REPS</span><span>PRESCRIBED</span><span>ACTUAL LB</span><span>REPS/NOTE</span><span></span>
           </div>
@@ -671,6 +672,13 @@ export default function App() {
   useEffect(()=>{ lsSave(LS_CURRENT_BLOCK, currentBlock); }, [currentBlock]);
   useEffect(()=>{ lsSave(LS_READINESS_HISTORY, readinessHistory); }, [readinessHistory]);
   useEffect(()=>{ lsSave(LS_DELOAD_STATE, deloadState); }, [deloadState]);
+
+  // Auto-archive an expired `current` deload on mount so "weeks since last
+  // break" doesn't reset to zero just because the user never clicked END EARLY.
+  useEffect(()=>{
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setDeloadState(prev => archiveExpiredDeload(prev, todayISO()));
+  }, []);
 
   // Snapshot today's readiness once per day. Functional setter no-ops if today's
   // snapshot is already current, so cascading renders are avoided.
@@ -901,7 +909,12 @@ export default function App() {
       )}
       {activeDeload && (
         <div style={{background:"rgba(251,146,60,0.08)",borderBottom:"1px solid #5a3a1a",padding:"4px 18px",fontSize:9,color:"#fb923c",letterSpacing:2,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <span>⌖ DELOADING — {activeDeload.daysRemaining} day{activeDeload.daysRemaining===1?"":"s"} remaining · loads at 60% · sessions do NOT count toward gates</span>
+          <span>
+            ⌖ DELOADING — {activeDeload.daysRemaining} day{activeDeload.daysRemaining===1?"":"s"} remaining · sessions do NOT count toward gates
+            {tier === "RECOVERY"
+              ? " · RECOVERY OVERRIDE — readiness <70, no loading today"
+              : " · loads at 60%"}
+          </span>
           <button onClick={()=>setDeloadState(prev=>endDeload(prev, todayISO()))}
             style={{background:"transparent",border:"1px solid #fb923c",color:"#fb923c",padding:"2px 8px",cursor:"pointer",fontSize:8,letterSpacing:2,...MONO}}>
             END EARLY

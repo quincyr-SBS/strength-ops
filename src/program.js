@@ -38,7 +38,8 @@ export const S = (sets, reps, load, loadNum, rpe, gate) => ({ sets, reps, load, 
 // ─────────────────────────────────────────────────────────────────────────────
 export function isoWeekKey(dateStr){
   if (!dateStr) return "";
-  const d = new Date(dateStr + "T00:00:00");
+  // Parse as UTC explicitly (append "Z") so the date math is timezone-invariant.
+  const d = new Date(dateStr + "T00:00:00Z");
   if (Number.isNaN(d.getTime())) return "";
   d.setUTCHours(0,0,0,0);
   d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
@@ -229,14 +230,17 @@ export const DELOAD_DURATION_DAYS       = 7;
 export const DELOAD_LOAD_MULT           = 0.6;
 export const DELOAD_SUGGEST_AFTER_WEEKS = 6;
 
+// Parse ISO date strings as UTC (append "Z") so date math is timezone-invariant.
+// Without this, addDays/daysBetween parsed in local TZ and then used UTC getters,
+// producing off-by-one errors in positive-offset timezones.
 export function addDays(dateISO, n){
-  const d = new Date(dateISO + "T00:00:00");
+  const d = new Date(dateISO + "T00:00:00Z");
   d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0,10);
 }
 export function daysBetween(fromISO, toISO){
-  const f = new Date(fromISO + "T00:00:00");
-  const t = new Date(toISO   + "T00:00:00");
+  const f = new Date(fromISO + "T00:00:00Z");
+  const t = new Date(toISO   + "T00:00:00Z");
   return Math.round((t - f) / 86400000);
 }
 
@@ -263,6 +267,20 @@ export function endDeload(deloadState, todayISO){
   };
 }
 
+// If `current` exists but has expired (endsOn < today), move it to history.
+// Active deloads and null states pass through unchanged. Called by the UI on
+// mount so a user who lets a deload window expire without clicking END EARLY
+// still has the deload counted toward weeksSinceLastDeload.
+export function archiveExpiredDeload(deloadState, todayISO){
+  const cur = deloadState?.current;
+  if (!cur) return deloadState || { current:null, history:[] };
+  if (cur.endsOn >= todayISO) return deloadState; // still active
+  return {
+    current: null,
+    history: [...(deloadState.history || []), { ...cur, endsOnActual: cur.endsOn }],
+  };
+}
+
 // Find the earliest logged session across all exercises (used as the reference
 // point for weeksSinceLastDeload when the user has never deloaded).
 function earliestSessionDate(stepState){
@@ -279,8 +297,16 @@ function earliestSessionDate(stepState){
 // Whole weeks since the most recent deload ended (or, if never deloaded, since
 // the earliest logged session). Returns null when the user has no training
 // history at all — no point suggesting a deload before they've trained.
+//
+// Defensive: if `current` exists and has expired (endsOn < today) but the UI
+// hasn't archived it yet, treat it as the most recent deload so the count
+// doesn't reset to "never deloaded."
 export function weeksSinceLastDeload(deloadState, stepState, todayISO){
-  const hist = deloadState?.history || [];
+  const hist = [...(deloadState?.history || [])];
+  const cur = deloadState?.current;
+  if (cur && cur.endsOn < todayISO){
+    hist.push({ ...cur, endsOnActual: cur.endsOn });
+  }
   const lastDeload = hist.length ? hist[hist.length - 1] : null;
   const referenceISO = lastDeload
     ? (lastDeload.endsOnActual ?? lastDeload.endsOn)

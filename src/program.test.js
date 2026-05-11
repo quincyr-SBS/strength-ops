@@ -18,6 +18,7 @@ import {
   getActiveDeload,
   startDeload,
   endDeload,
+  archiveExpiredDeload,
   weeksSinceLastDeload,
   DELOAD_DURATION_DAYS,
 } from "./program.js";
@@ -542,6 +543,56 @@ test("daysBetween: same day is 0; forward is positive; backward is negative", ()
   assert.equal(daysBetween("2026-04-15", "2026-04-15"), 0);
   assert.equal(daysBetween("2026-04-15", "2026-04-22"), 7);
   assert.equal(daysBetween("2026-04-22", "2026-04-15"), -7);
+});
+
+test("addDays: identity is exact for n=0 (regression: TZ-parsed dates used to shift to previous day in positive-offset TZs)", () => {
+  // With local-TZ parsing + UTC setters, addDays("2026-05-08", 0) returned
+  // "2026-05-07" in TZs like Asia/Tokyo. UTC parsing fixes it.
+  assert.equal(addDays("2026-05-08",  0), "2026-05-08");
+  assert.equal(addDays("2026-01-01",  0), "2026-01-01");
+  assert.equal(addDays("2026-12-31",  0), "2026-12-31");
+});
+
+test("addDays + daysBetween roundtrip: addDays(d, n) is exactly n days later", () => {
+  for (const n of [1, 7, 30, -1, -7]){
+    const next = addDays("2026-05-08", n);
+    assert.equal(daysBetween("2026-05-08", next), n);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// archiveExpiredDeload
+// ─────────────────────────────────────────────────────────────────────────────
+test("archiveExpiredDeload: moves expired current to history (endsOnActual = endsOn)", () => {
+  const state = { current:{ startedOn:"2026-04-01", endsOn:"2026-04-07" }, history:[] };
+  const after = archiveExpiredDeload(state, "2026-04-15");
+  assert.equal(after.current, null);
+  assert.equal(after.history.length, 1);
+  assert.equal(after.history[0].endsOnActual, "2026-04-07");
+});
+
+test("archiveExpiredDeload: leaves active deload alone", () => {
+  const state = { current:startDeload("2026-05-08"), history:[] };
+  const after = archiveExpiredDeload(state, "2026-05-10");  // still active
+  assert.deepEqual(after, state);
+});
+
+test("archiveExpiredDeload: null current is a no-op (returns valid empty state)", () => {
+  assert.deepEqual(
+    archiveExpiredDeload(undefined, "2026-05-08"),
+    { current:null, history:[] }
+  );
+});
+
+test("weeksSinceLastDeload: expired-but-not-archived current still counts", () => {
+  // Regression: previously only history was scanned, so an unarchived expired
+  // deload looked like "never deloaded" and reset the counter.
+  const state = {
+    current: { startedOn:"2026-04-01", endsOn:"2026-04-07" },
+    history: [],
+  };
+  // 2026-04-07 → 2026-05-12 = 35 days = 5 weeks
+  assert.equal(weeksSinceLastDeload(state, {}, "2026-05-12"), 5);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
