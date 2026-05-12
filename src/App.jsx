@@ -7,6 +7,8 @@ import {
   getVisibleExercises, getLockedPreview, evaluateDeloadTriggers,
   scaleLoad,
   applyCalibration,
+  getActiveDeload, startDeload, endDeload, archiveExpiredDeload, weeksSinceLastDeload,
+  DELOAD_DURATION_DAYS, DELOAD_LOAD_MULT, DELOAD_SUGGEST_AFTER_WEEKS,
 } from "./program";
 // ─────────────────────────────────────────────────────────────────────────────
 // SYSTEM PROMPT
@@ -19,6 +21,7 @@ Core rules:
 - Training: protect the spine, Zone 2 at ~133 bpm, progressive overload without ego
 - Sleep: Oura readiness 80+ = train hard, 70-79 = moderate (80% loads), below 70 = recovery only
 - HRV dropping 3+ days = cut volume. Elevated resting HR 5+ bpm = Zone 2 or rest
+- Deload weeks: manual 7-day back-off (60% loads, RPE cap 6). System suggests one every 6+ weeks. Sessions logged during a deload do NOT count toward gate progression — by design.
 - Block A: trap-bar high handle DL, goblet box squat, DB bench/OHP, accessory curls
 - Block B unlocks SSB squat + seated BB OHP + shoulder prehab — gated on pain-free weeks
 - No prolonged fasting on training days
@@ -31,6 +34,7 @@ Always give specific numbers. Reference current block, current exercise step, an
 const TIER_CONFIG = {
   HARD:     { label:"TRAIN HARD",    range:"READINESS ≥ 80", color:"#4ade80", bg:"rgba(74,222,128,0.08)",  border:"#4ade80",  desc:"Full intensity. Progressive overload. Heavy compounds confirm gate progress." },
   MODERATE: { label:"MODERATE",      range:"READINESS 70–79", color:"#facc15", bg:"rgba(250,204,21,0.08)",  border:"#facc15",  desc:"Sub-maximal effort (80% loads). Builds work capacity but heavy compounds need a HARD day to advance." },
+  DELOAD:   { label:"DELOAD WEEK",   range:"manual / suggested", color:"#fb923c", bg:"rgba(251,146,60,0.08)", border:"#fb923c",  desc:"Deliberate back-off. Loads scaled to 60%. RPE cap 6. Sessions do NOT count toward gate progress." },
   RECOVERY: { label:"RECOVERY ONLY", range:"READINESS < 70",  color:"#f87171", bg:"rgba(248,113,113,0.08)", border:"#f87171",  desc:"Zone 2 walk, mobility, McGill Big 3. No loading." },
 };
 
@@ -452,6 +456,7 @@ function todayKey(){ return DAY_ORDER[new Date().getDay()]; }
 const LS_STEP_STATE         = "sqb_step_state";
 const LS_CURRENT_BLOCK      = "sqb_current_block";
 const LS_READINESS_HISTORY  = "sqb_readiness_history";
+const LS_DELOAD_STATE       = "sqb_deload_state";
 function lsLoad(k, fallback){ try{ const v = localStorage.getItem(k); return v ? JSON.parse(v) : fallback; }catch{ return fallback; } }
 function lsSave(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch{ /* storage full or disabled — non-fatal */ } }
 function todayISO(){ return new Date().toISOString().slice(0,10); }
@@ -545,7 +550,8 @@ function ExerciseCard({ ex, exState, mult, tier, painBack, painShoulder, data, o
               {blockGate && <span style={{color:"#facc15",marginLeft:6}}>· phase transition</span>}
             </div>
           )}
-          {mult < 1.0 && <div style={{padding:"4px 12px",fontSize:8,color:"#facc15",borderBottom:"1px solid #0f1f0f",...MONO}}>MODERATE TIER — LOADS SCALED TO 80%</div>}
+          {tier === "MODERATE" && <div style={{padding:"4px 12px",fontSize:8,color:"#facc15",borderBottom:"1px solid #0f1f0f",...MONO}}>MODERATE TIER — LOADS SCALED TO 80%</div>}
+          {tier === "DELOAD"   && <div style={{padding:"4px 12px",fontSize:8,color:"#fb923c",borderBottom:"1px solid #0f1f0f",...MONO}}>DELOAD WEEK — LOADS SCALED TO 60% · SESSIONS DO NOT ADVANCE GATES</div>}
           <div style={{display:"grid",gridTemplateColumns:"26px 50px 1fr 85px 1fr 90px",gap:5,padding:"4px 8px 2px",fontSize:7,letterSpacing:2,color:"#2a4a2a",borderBottom:"1px solid #0f1f0f",...MONO}}>
             <span>SET</span><span>REPS</span><span>PRESCRIBED</span><span>ACTUAL LB</span><span>REPS/NOTE</span><span></span>
           </div>
@@ -656,14 +662,23 @@ export default function App() {
   const [backPain, setBackPain] = useState(0);
   const [shoulderPain, setShoulderPain] = useState(0);
 
-  // Persisted: per-exercise step state + current block + readiness history
+  // Persisted: per-exercise step state + current block + readiness history + deload
   const [stepState, setStepState] = useState(() => lsLoad(LS_STEP_STATE, {}));
   const [currentBlock, setCurrentBlock] = useState(() => lsLoad(LS_CURRENT_BLOCK, "A"));
   const [readinessHistory, setReadinessHistory] = useState(() => lsLoad(LS_READINESS_HISTORY, []));
+  const [deloadState, setDeloadState] = useState(() => lsLoad(LS_DELOAD_STATE, { current:null, history:[] }));
 
   useEffect(()=>{ lsSave(LS_STEP_STATE, stepState); }, [stepState]);
   useEffect(()=>{ lsSave(LS_CURRENT_BLOCK, currentBlock); }, [currentBlock]);
   useEffect(()=>{ lsSave(LS_READINESS_HISTORY, readinessHistory); }, [readinessHistory]);
+  useEffect(()=>{ lsSave(LS_DELOAD_STATE, deloadState); }, [deloadState]);
+
+  // Auto-archive an expired `current` deload on mount so "weeks since last
+  // break" doesn't reset to zero just because the user never clicked END EARLY.
+  useEffect(()=>{
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setDeloadState(prev => archiveExpiredDeload(prev, todayISO()));
+  }, []);
 
   // Snapshot today's readiness once per day. Functional setter no-ops if today's
   // snapshot is already current, so cascading renders are avoided.
@@ -708,9 +723,22 @@ export default function App() {
     carbs:   acc.carbs   + (Number(e.carbs)   || 0),
   }), { cal:0, protein:0, sodium:0, fat:0, carbs:0 });
 
-  const tier   = getTier(oura.readiness);
-  const tcfg   = TIER_CONFIG[tier];
-  const mult   = tier==="HARD" ? 1.0 : tier==="MODERATE" ? 0.8 : 0;
+  // Tier resolution priority: RECOVERY (Oura) > DELOAD (active) > HARD/MODERATE (Oura)
+  const today        = todayISO();
+  const activeDeload = getActiveDeload(deloadState, today);
+  const baseTier     = getTier(oura.readiness);
+  const tier         = baseTier === "RECOVERY" ? "RECOVERY"
+                     : activeDeload             ? "DELOAD"
+                     :                            baseTier;
+  const tcfg         = TIER_CONFIG[tier];
+  const mult         = tier==="HARD"     ? 1.0
+                     : tier==="MODERATE" ? 0.8
+                     : tier==="DELOAD"   ? DELOAD_LOAD_MULT
+                     :                     0;
+  const weeksSinceDeload   = weeksSinceLastDeload(deloadState, stepState, today);
+  const shouldSuggestDeload = !activeDeload
+                              && weeksSinceDeload !== null
+                              && weeksSinceDeload >= DELOAD_SUGGEST_AFTER_WEEKS;
   const hrvAlert = getHRVAlert(oura.hrv7day, oura.hrv);
   const rhrAlert = getRHRAlert(oura.rhrBaseline, oura.rhr);
   const blockCfg = BLOCK_CONFIG[currentBlock];
@@ -798,7 +826,10 @@ export default function App() {
     const userMsg = chatInput.trim();
     setChatInput("");
     const nutCtx = `[NUTRITION TODAY: ${nutTotals.cal}cal / ${nutTotals.protein}g protein / ${nutTotals.sodium}mg sodium / ${waterOz}oz water — targets: ${NUTRITION_TARGETS.cal}cal / ${NUTRITION_TARGETS.protein}g protein / ${NUTRITION_TARGETS.sodium}mg sodium / ${NUTRITION_TARGETS.water}oz — meals: ${foodLog.length>0?foodLog.map(f=>f.name).join(", "):"none logged"}]`;
-    const ctx = `[OURA: Readiness ${oura.readiness}, HRV ${oura.hrv}ms (7d avg: ${oura.hrv7day}ms), RHR ${oura.rhr}bpm (baseline: ${oura.rhrBaseline}bpm), Tier: ${tier}, Block: ${currentBlock} (${blockLabel(currentBlock)}), Back Pain: ${backPain}/10, Shoulder Pain: ${shoulderPain}/10${deloadTriggers.length?`, DELOAD TRIGGERS: ${deloadTriggers.join("; ")}`:""}]\n${nutCtx}\n\n${userMsg}`;
+    const deloadCtx = activeDeload
+      ? `, ACTIVE DELOAD: day ${(DELOAD_DURATION_DAYS - activeDeload.daysRemaining + 1)} of ${DELOAD_DURATION_DAYS} (ends ${activeDeload.endsOn})`
+      : (weeksSinceDeload !== null ? `, ${weeksSinceDeload}w since last deload` : "");
+    const ctx = `[OURA: Readiness ${oura.readiness}, HRV ${oura.hrv}ms (7d avg: ${oura.hrv7day}ms), RHR ${oura.rhr}bpm (baseline: ${oura.rhrBaseline}bpm), Tier: ${tier}, Block: ${currentBlock} (${blockLabel(currentBlock)}), Back Pain: ${backPain}/10, Shoulder Pain: ${shoulderPain}/10${deloadCtx}${deloadTriggers.length?`, DELOAD TRIGGERS: ${deloadTriggers.join("; ")}`:""}]\n${nutCtx}\n\n${userMsg}`;
     const newMsgs = [...messages, {role:"user",content:userMsg}];
     setMessages(newMsgs);
     setChatLoading(true);
@@ -874,6 +905,29 @@ export default function App() {
       {deloadTriggers.length > 0 && (
         <div style={{background:"rgba(248,113,113,0.06)",borderBottom:"1px solid #3a1a1a",padding:"4px 18px",fontSize:9,color:"#f87171",letterSpacing:2}}>
           {deloadTriggers.map((t,i) => <div key={i}>⚠ AUTO-DELOAD TRIGGER: {t}</div>)}
+        </div>
+      )}
+      {activeDeload && (
+        <div style={{background:"rgba(251,146,60,0.08)",borderBottom:"1px solid #5a3a1a",padding:"4px 18px",fontSize:9,color:"#fb923c",letterSpacing:2,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span>
+            ⌖ DELOADING — {activeDeload.daysRemaining} day{activeDeload.daysRemaining===1?"":"s"} remaining · sessions do NOT count toward gates
+            {tier === "RECOVERY"
+              ? " · RECOVERY OVERRIDE — readiness <70, no loading today"
+              : " · loads at 60%"}
+          </span>
+          <button onClick={()=>setDeloadState(prev=>endDeload(prev, todayISO()))}
+            style={{background:"transparent",border:"1px solid #fb923c",color:"#fb923c",padding:"2px 8px",cursor:"pointer",fontSize:8,letterSpacing:2,...MONO}}>
+            END EARLY
+          </button>
+        </div>
+      )}
+      {shouldSuggestDeload && (
+        <div style={{background:"rgba(250,204,21,0.06)",borderBottom:"1px solid #3a3a0a",padding:"4px 18px",fontSize:9,color:"#facc15",letterSpacing:2,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span>⚠ Consider a deload week — {weeksSinceDeload} weeks since your last break</span>
+          <button onClick={()=>setDeloadState(prev=>({ current:startDeload(todayISO()), history:prev?.history||[] }))}
+            style={{background:"#1a2e1a",border:"1px solid #facc15",color:"#facc15",padding:"2px 8px",cursor:"pointer",fontSize:8,letterSpacing:2,...MONO}}>
+            START DELOAD
+          </button>
         </div>
       )}
       {blockAdvanceReady && nextBlock && !showBlockConfirm && (
@@ -964,6 +1018,32 @@ export default function App() {
               </div>
             )}
 
+            {/* Deload toggle */}
+            <div style={{marginBottom:8,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+              {!activeDeload ? (
+                <>
+                  <button onClick={()=>setDeloadState(prev=>({ current:startDeload(todayISO()), history:prev?.history||[] }))}
+                    style={{background:"#1a2e1a",border:"1px solid #fb923c",color:"#fb923c",padding:"5px 12px",cursor:"pointer",fontSize:8,letterSpacing:2,...MONO}}>
+                    ▼ START DELOAD WEEK
+                  </button>
+                  <span style={{fontSize:8,color:"#7a7a4a",letterSpacing:1,...MONO}}>
+                    {DELOAD_DURATION_DAYS} days · loads at {Math.round(DELOAD_LOAD_MULT*100)}% · RPE cap 6 · sessions do NOT count toward gates
+                    {weeksSinceDeload !== null ? ` · ${weeksSinceDeload}w since last break` : ""}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <button onClick={()=>setDeloadState(prev=>endDeload(prev, todayISO()))}
+                    style={{background:"#1a2e1a",border:"1px solid #fb923c",color:"#fb923c",padding:"5px 12px",cursor:"pointer",fontSize:8,letterSpacing:2,...MONO}}>
+                    ▲ END DELOAD EARLY
+                  </button>
+                  <span style={{fontSize:8,color:"#fb923c",letterSpacing:1,...MONO}}>
+                    DELOADING · {activeDeload.daysRemaining} day{activeDeload.daysRemaining===1?"":"s"} remaining (ends {activeDeload.endsOn})
+                  </span>
+                </>
+              )}
+            </div>
+
             {/* Program calibration */}
             <button onClick={()=>setShowCalibrate(v=>!v)} style={{background:"#1a2e1a",border:"1px solid #2d4a2d",color:"#6aaa6a",padding:"5px 12px",cursor:"pointer",fontSize:8,letterSpacing:2,...MONO,marginBottom:8}}>
               {showCalibrate?"▲ CLOSE":"▼ CALIBRATE PROGRAM TO CURRENT LIFTS"}
@@ -1049,8 +1129,9 @@ export default function App() {
                 <span style={{color:"#4a6a4a",fontSize:9}}>—</span>
                 <span style={{color:"#9aba9a",fontSize:9}}>
                   {tier==="RECOVERY"?"NO LOADING. ZONE 2 + MOBILITY ONLY.":
+                   tier==="DELOAD"  ?"60% LOADS · RPE CAP 6 · SESSIONS DON'T COUNT":
                    tier==="MODERATE"?"80% LOADS — RPE TARGETS STILL APPLY":
-                   "FULL PROGRAM — HIT YOUR NUMBERS"}
+                                     "FULL PROGRAM — HIT YOUR NUMBERS"}
                 </span>
               </div>
               <span style={{fontSize:9,color:blockCfg.color,letterSpacing:2,fontWeight:"bold"}}>{blockLabel(currentBlock)}</span>
@@ -1125,6 +1206,7 @@ export default function App() {
 
                 {/* Tier warning */}
                 {tier==="MODERATE"&&<div style={{fontSize:8,color:"#facc15",letterSpacing:1,marginBottom:8,padding:"5px 9px",background:"rgba(250,204,21,0.05)",border:"1px solid rgba(250,204,21,0.15)"}}>⚠ MODERATE DAY — ALL LOADS AT 80%. RPE TARGETS STILL APPLY. DO NOT GRIND.</div>}
+                {tier==="DELOAD"&&<div style={{fontSize:8,color:"#fb923c",letterSpacing:1,marginBottom:8,padding:"5px 9px",background:"rgba(251,146,60,0.05)",border:"1px solid rgba(251,146,60,0.15)"}}>⌖ DELOAD WEEK — LOADS AT 60%. RPE CAP 6. SESSIONS DO NOT ADVANCE GATES.</div>}
                 {tier==="RECOVERY"&&<div style={{fontSize:8,color:"#f87171",letterSpacing:1,marginBottom:8,padding:"5px 9px",background:"rgba(248,113,113,0.05)",border:"1px solid rgba(248,113,113,0.15)"}}>✕ RECOVERY DAY — NO LOADING. ZONE 2 CARDIO AND MCGILL BIG 3 ONLY.</div>}
 
                 {/* Exercises — visible (unlocked) */}

@@ -13,6 +13,14 @@ import {
   scaleLoad,
   seekStepByLoad,
   applyCalibration,
+  addDays,
+  daysBetween,
+  getActiveDeload,
+  startDeload,
+  endDeload,
+  archiveExpiredDeload,
+  weeksSinceLastDeload,
+  DELOAD_DURATION_DAYS,
 } from "./program.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -519,4 +527,193 @@ test("applyCalibration: unknown exercise id is skipped (no crash)", () => {
   const program = makeCalProgram();
   const after = applyCalibration({}, program, { not_real:100 });
   assert.deepEqual(after, {});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Date math — addDays / daysBetween
+// ─────────────────────────────────────────────────────────────────────────────
+test("addDays: forward, across month boundary", () => {
+  assert.equal(addDays("2026-04-28", 7), "2026-05-05");
+});
+test("addDays: zero is identity, negative goes back", () => {
+  assert.equal(addDays("2026-04-15", 0),  "2026-04-15");
+  assert.equal(addDays("2026-04-15", -1), "2026-04-14");
+});
+test("daysBetween: same day is 0; forward is positive; backward is negative", () => {
+  assert.equal(daysBetween("2026-04-15", "2026-04-15"), 0);
+  assert.equal(daysBetween("2026-04-15", "2026-04-22"), 7);
+  assert.equal(daysBetween("2026-04-22", "2026-04-15"), -7);
+});
+
+test("addDays: identity is exact for n=0 (regression: TZ-parsed dates used to shift to previous day in positive-offset TZs)", () => {
+  // With local-TZ parsing + UTC setters, addDays("2026-05-08", 0) returned
+  // "2026-05-07" in TZs like Asia/Tokyo. UTC parsing fixes it.
+  assert.equal(addDays("2026-05-08",  0), "2026-05-08");
+  assert.equal(addDays("2026-01-01",  0), "2026-01-01");
+  assert.equal(addDays("2026-12-31",  0), "2026-12-31");
+});
+
+test("addDays + daysBetween roundtrip: addDays(d, n) is exactly n days later", () => {
+  for (const n of [1, 7, 30, -1, -7]){
+    const next = addDays("2026-05-08", n);
+    assert.equal(daysBetween("2026-05-08", next), n);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// archiveExpiredDeload
+// ─────────────────────────────────────────────────────────────────────────────
+test("archiveExpiredDeload: moves expired current to history (endsOnActual = endsOn)", () => {
+  const state = { current:{ startedOn:"2026-04-01", endsOn:"2026-04-07" }, history:[] };
+  const after = archiveExpiredDeload(state, "2026-04-15");
+  assert.equal(after.current, null);
+  assert.equal(after.history.length, 1);
+  assert.equal(after.history[0].endsOnActual, "2026-04-07");
+});
+
+test("archiveExpiredDeload: leaves active deload alone", () => {
+  const state = { current:startDeload("2026-05-08"), history:[] };
+  const after = archiveExpiredDeload(state, "2026-05-10");  // still active
+  assert.deepEqual(after, state);
+});
+
+test("archiveExpiredDeload: null current is a no-op (returns valid empty state)", () => {
+  assert.deepEqual(
+    archiveExpiredDeload(undefined, "2026-05-08"),
+    { current:null, history:[] }
+  );
+});
+
+test("weeksSinceLastDeload: expired-but-not-archived current still counts", () => {
+  // Regression: previously only history was scanned, so an unarchived expired
+  // deload looked like "never deloaded" and reset the counter.
+  const state = {
+    current: { startedOn:"2026-04-01", endsOn:"2026-04-07" },
+    history: [],
+  };
+  // 2026-04-07 → 2026-05-12 = 35 days = 5 weeks
+  assert.equal(weeksSinceLastDeload(state, {}, "2026-05-12"), 5);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// startDeload / getActiveDeload / endDeload
+// ─────────────────────────────────────────────────────────────────────────────
+test("startDeload: builds 7-day inclusive window by default", () => {
+  const d = startDeload("2026-05-08");
+  assert.equal(d.startedOn, "2026-05-08");
+  assert.equal(d.endsOn,    "2026-05-14");  // 7 days inclusive
+});
+
+test("getActiveDeload: null when no current deload", () => {
+  assert.equal(getActiveDeload({ current:null, history:[] }, "2026-05-08"), null);
+  assert.equal(getActiveDeload(undefined, "2026-05-08"), null);
+});
+
+test("getActiveDeload: active on start day with full days remaining", () => {
+  const state = { current: startDeload("2026-05-08"), history:[] };
+  const a = getActiveDeload(state, "2026-05-08");
+  assert.equal(a.daysRemaining, 7);
+});
+
+test("getActiveDeload: active on final day with 1 day remaining", () => {
+  const state = { current: startDeload("2026-05-08"), history:[] };
+  const a = getActiveDeload(state, "2026-05-14");
+  assert.equal(a.daysRemaining, 1);
+});
+
+test("getActiveDeload: null the day after endsOn", () => {
+  const state = { current: startDeload("2026-05-08"), history:[] };
+  assert.equal(getActiveDeload(state, "2026-05-15"), null);
+});
+
+test("endDeload: moves current to history with actual end stamp", () => {
+  const state = { current: startDeload("2026-05-08"), history:[] };
+  const after = endDeload(state, "2026-05-10");  // end early on day 3
+  assert.equal(after.current, null);
+  assert.equal(after.history.length, 1);
+  assert.equal(after.history[0].endsOnActual, "2026-05-10");
+  assert.equal(after.history[0].startedOn,    "2026-05-08");
+});
+
+test("endDeload: no-op when nothing active", () => {
+  const state = { current:null, history:[{ startedOn:"2026-04-01", endsOn:"2026-04-07" }] };
+  assert.deepEqual(endDeload(state, "2026-05-10"), state);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// weeksSinceLastDeload
+// ─────────────────────────────────────────────────────────────────────────────
+test("weeksSinceLastDeload: null when user has no sessions and never deloaded", () => {
+  assert.equal(weeksSinceLastDeload({ current:null, history:[] }, {}, "2026-05-08"), null);
+});
+
+test("weeksSinceLastDeload: counts from earliest session when never deloaded", () => {
+  const stepState = { bench: { stepIdx:0, history:[
+    { date:"2026-04-01", completed:true, stepIdx:0 },
+    { date:"2026-04-15", completed:true, stepIdx:0 },
+  ]}};
+  // 2026-04-01 → 2026-05-13 = 42 days = 6 weeks
+  assert.equal(weeksSinceLastDeload({ current:null, history:[] }, stepState, "2026-05-13"), 6);
+});
+
+test("weeksSinceLastDeload: counts from end of most recent deload", () => {
+  const deload = {
+    current:null,
+    history:[
+      { startedOn:"2026-03-01", endsOn:"2026-03-07" },
+      { startedOn:"2026-04-15", endsOn:"2026-04-21" },  // most recent
+    ],
+  };
+  // 2026-04-21 → 2026-05-12 = 21 days = 3 weeks
+  assert.equal(weeksSinceLastDeload(deload, {}, "2026-05-12"), 3);
+});
+
+test("weeksSinceLastDeload: prefers endsOnActual when set (early end)", () => {
+  const deload = {
+    current:null,
+    history:[{ startedOn:"2026-04-15", endsOn:"2026-04-21", endsOnActual:"2026-04-18" }],
+  };
+  // 2026-04-18 → 2026-05-09 = 21 days = 3 weeks
+  assert.equal(weeksSinceLastDeload(deload, {}, "2026-05-09"), 3);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// evaluateGate — DELOAD/RECOVERY entries are excluded from counts
+// ─────────────────────────────────────────────────────────────────────────────
+test("evaluateGate (RPE_BELOW): DELOAD sessions don't count toward the streak", () => {
+  // 2 HARD sessions at RPE 7 would clear the gate, but a DELOAD entry between
+  // them must NOT contaminate the lastN window — it should be skipped entirely.
+  const r = evaluateGate(G.rpe(7, 2), [
+    { completed:true, topRPE:7, tier:"HARD" },
+    { completed:true, topRPE:5, tier:"DELOAD" },   // ignored
+    { completed:true, topRPE:7, tier:"HARD" },
+  ]);
+  assert.equal(r.cleared, true);
+});
+
+test("evaluateGate (RPE_PAIN): DELOAD sessions don't satisfy HARD-confirmation", () => {
+  // The only "HARD" entry is actually a DELOAD — filtered out — so no HARD
+  // remains in the qualifying window. Gate must NOT clear.
+  const r = evaluateGate(G.rpePain(7.5, 2, 2), [
+    { completed:true, topRPE:6, painBack:1, painShoulder:0, tier:"MODERATE" },
+    { completed:true, topRPE:5, painBack:0, painShoulder:0, tier:"DELOAD"   },
+    { completed:true, topRPE:6, painBack:1, painShoulder:0, tier:"MODERATE" },
+  ]);
+  assert.equal(r.cleared, false);
+});
+
+test("evaluateGate (PAIN_FREE_WEEKS): DELOAD weeks don't count toward the window", () => {
+  // 3 pain-free weeks but the middle one is DELOAD — should count as 2.
+  const r = evaluateGate(G.weeks(3, 2), [
+    { completed:true, date:"2026-04-06", painBack:0, painShoulder:0, tier:"HARD"   },
+    { completed:true, date:"2026-04-13", painBack:0, painShoulder:0, tier:"DELOAD" },
+    { completed:true, date:"2026-04-20", painBack:0, painShoulder:0, tier:"HARD"   },
+  ]);
+  assert.equal(r.cleared, false);
+  assert.match(r.progress, /^2\/3/);
+});
+
+// Sanity check: DELOAD_DURATION_DAYS is a sensible default
+test("DELOAD_DURATION_DAYS is 7", () => {
+  assert.equal(DELOAD_DURATION_DAYS, 7);
 });
