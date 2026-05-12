@@ -6,7 +6,7 @@
 - Two source files do most of the work:
   - `src/App.jsx` — single-file React app (program tab, readiness tab, nutrition tab, coach AI tab, log tab).
   - `src/program.js` — pure helpers (no React, no DOM): gate evaluator, block + step state, calibration, deload, date math, load scaling. Imported by `App.jsx`.
-- Persistence: `localStorage` only. Keys are `sqb_*` (e.g. `sqb_step_state`, `sqb_current_block`, `sqb_readiness_history`, `sqb_deload_state`).
+- Persistence: `localStorage` only. Keys are `sqb_*` — App-owned (`sqb_step_state`, `sqb_current_block`, `sqb_readiness_history`, `sqb_deload_state`) plus three in the Oura hook (`sqb_rhr_baseline`, `sqb_oura_cache`, `sqb_oura_cache_ts`).
 - Oura sync is a separate hook (`src/hooks/useOuraSync.js`) hitting a Val.town proxy. Cache 30 min.
 - No backend other than the Netlify function for Oura.
 
@@ -27,7 +27,7 @@
 
 ## Build
 
-- `npm run build` is Vite. Bundle currently around **260 KB / 80 KB gzip**. Single chunk.
+- `npm run build` is Vite. Single chunk. Check the latest `npm run build` output for current bundle size — it grows with each feature.
 
 ## Program model conventions
 
@@ -50,7 +50,7 @@
 ## PR workflow
 
 - One feature branch (`claude/strength-training-program-C7erZ`) is used for all work. Each round of changes opens a fresh PR against `master`.
-- PRs are squash-merged or merge-committed by the user. After merge, the same branch continues; new commits land on the next PR.
+- PRs are merge-committed by the user (history shows merge commits on `master`, e.g. `be09e3c`). After merge, the same feature branch continues; new commits land on the next PR.
 - Pre-commit/lint hooks aren't configured. Run `npm test`, `npm run lint`, `npm run build` manually before pushing.
 - Confirm before any destructive git op (force-push, reset --hard, branch -D) per the standard Claude Code rules.
 
