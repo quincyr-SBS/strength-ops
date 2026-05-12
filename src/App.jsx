@@ -735,17 +735,6 @@ export default function App() {
                      : tier==="MODERATE" ? 0.8
                      : tier==="DELOAD"   ? DELOAD_LOAD_MULT
                      :                     0;
-  const loadBanner   = tier === "MODERATE"
-                     ? {
-                         variant: "MODERATE",
-                         text: "MODERATE TIER — LOADS SCALED TO 80%",
-                       }
-                     : tier === "DELOAD"
-                     ? {
-                         variant: "DELOAD",
-                         text: `DELOAD — LOADS SCALED TO ${Math.round(DELOAD_LOAD_MULT * 100)}%`,
-                       }
-                     : null;
   const weeksSinceDeload   = weeksSinceLastDeload(deloadState, stepState, today);
   const shouldSuggestDeload = !activeDeload
                               && weeksSinceDeload !== null
