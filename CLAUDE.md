@@ -36,7 +36,7 @@
 - Gate types: `RPE_BELOW` (accessories), `RPE_PAIN` (heavy compounds — includes back + shoulder pain), `PAIN_FREE_WEEKS` (phase transitions), `null` (maintenance).
 - `RPE_PAIN` and `PAIN_FREE_WEEKS` require at least one HARD-tier session in the qualifying window before clearing.
 - **Tier resolution priority:** `RECOVERY` (Oura readiness < 70) > `DELOAD` (active) > `HARD`/`MODERATE` (Oura). Recovery always wins.
-- **`mult` per tier:** HARD 1.0, MODERATE 0.8, DELOAD 0.6, RECOVERY 0.
+- **`mult` per tier:** HARD 1.0, MODERATE 0.8, DELOAD 0.85, RECOVERY 0. DELOAD also cuts working sets to 50% (`effectiveSets()` helper) — small load drop, bigger volume drop is the classic deload protocol.
 - Sessions logged during DELOAD or RECOVERY are excluded from gate counts by design.
 
 ## Date math

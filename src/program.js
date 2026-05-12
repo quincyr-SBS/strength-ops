@@ -227,8 +227,19 @@ export function applyCalibration(stepState, program, calibrations){
 //     history: [{ startedOn, endsOn, endsOnActual? }, ...] }
 // ─────────────────────────────────────────────────────────────────────────────
 export const DELOAD_DURATION_DAYS       = 7;
-export const DELOAD_LOAD_MULT           = 0.6;
+// Classic deload protocol: small load cut + bigger volume cut. NOT a deep
+// load drop — pattern integrity matters. Sets at 50%, weight at 85%.
+export const DELOAD_LOAD_MULT           = 0.85;
+export const DELOAD_SET_MULT            = 0.5;
 export const DELOAD_SUGGEST_AFTER_WEEKS = 6;
+
+// Number of working sets to render during a deload, given the canonical
+// per-step set count from the progression. Cuts to 50%, rounded, minimum 1.
+// Non-DELOAD tiers pass through unchanged.
+export function effectiveSets(rawSets, tier){
+  if (tier !== "DELOAD") return rawSets;
+  return Math.max(1, Math.round(Number(rawSets) * DELOAD_SET_MULT));
+}
 
 // Parse ISO date strings as UTC (append "Z") so date math is timezone-invariant.
 // Without this, addDays/daysBetween parsed in local TZ and then used UTC getters,

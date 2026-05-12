@@ -21,6 +21,9 @@ import {
   archiveExpiredDeload,
   weeksSinceLastDeload,
   DELOAD_DURATION_DAYS,
+  DELOAD_LOAD_MULT,
+  DELOAD_SET_MULT,
+  effectiveSets,
 } from "./program.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -716,4 +719,32 @@ test("evaluateGate (PAIN_FREE_WEEKS): DELOAD weeks don't count toward the window
 // Sanity check: DELOAD_DURATION_DAYS is a sensible default
 test("DELOAD_DURATION_DAYS is 7", () => {
   assert.equal(DELOAD_DURATION_DAYS, 7);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Deload protocol constants + effectiveSets
+// (Classic deload: small load cut + bigger volume cut, NOT a deep load drop.)
+// ─────────────────────────────────────────────────────────────────────────────
+test("DELOAD constants encode the classic protocol (85% loads, 50% sets)", () => {
+  assert.equal(DELOAD_LOAD_MULT, 0.85);
+  assert.equal(DELOAD_SET_MULT,  0.5);
+});
+
+test("effectiveSets: passes through when tier is not DELOAD", () => {
+  assert.equal(effectiveSets(3, "HARD"),     3);
+  assert.equal(effectiveSets(4, "MODERATE"), 4);
+  assert.equal(effectiveSets(5, "RECOVERY"), 5);
+});
+
+test("effectiveSets: cuts sets to 50% on DELOAD (rounded)", () => {
+  assert.equal(effectiveSets(2, "DELOAD"), 1);  // round(1.0) = 1
+  assert.equal(effectiveSets(3, "DELOAD"), 2);  // round(1.5) = 2
+  assert.equal(effectiveSets(4, "DELOAD"), 2);  // round(2.0) = 2
+  assert.equal(effectiveSets(5, "DELOAD"), 3);  // round(2.5) = 3 (JS rounds half up)
+  assert.equal(effectiveSets(6, "DELOAD"), 3);  // round(3.0) = 3
+});
+
+test("effectiveSets: never returns less than 1 (single-set exercises still get a set)", () => {
+  assert.equal(effectiveSets(1, "DELOAD"), 1);
+  assert.equal(effectiveSets(0, "DELOAD"), 1);
 });

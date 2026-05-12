@@ -8,7 +8,8 @@ import {
   scaleLoad,
   applyCalibration,
   getActiveDeload, startDeload, endDeload, archiveExpiredDeload, weeksSinceLastDeload,
-  DELOAD_DURATION_DAYS, DELOAD_LOAD_MULT, DELOAD_SUGGEST_AFTER_WEEKS,
+  DELOAD_DURATION_DAYS, DELOAD_LOAD_MULT, DELOAD_SET_MULT, DELOAD_SUGGEST_AFTER_WEEKS,
+  effectiveSets,
 } from "./program";
 // ─────────────────────────────────────────────────────────────────────────────
 // SYSTEM PROMPT
@@ -21,7 +22,7 @@ Core rules:
 - Training: protect the spine, Zone 2 at ~133 bpm, progressive overload without ego
 - Sleep: Oura readiness 80+ = train hard, 70-79 = moderate (80% loads), below 70 = recovery only
 - HRV dropping 3+ days = cut volume. Elevated resting HR 5+ bpm = Zone 2 or rest
-- Deload weeks: manual 7-day back-off (60% loads, RPE cap 6). System suggests one every 6+ weeks. Sessions logged during a deload do NOT count toward gate progression — by design.
+- Deload weeks: manual 7-day back-off — small load cut (85%) + bigger volume cut (sets at 50%), RPE cap 6. System suggests one every 6+ weeks. Sessions logged during a deload do NOT count toward gate progression — by design.
 - Block A: trap-bar high handle DL, goblet box squat, DB bench/OHP, accessory curls
 - Block B unlocks SSB squat + seated BB OHP + shoulder prehab — gated on pain-free weeks
 - No prolonged fasting on training days
@@ -34,7 +35,7 @@ Always give specific numbers. Reference current block, current exercise step, an
 const TIER_CONFIG = {
   HARD:     { label:"TRAIN HARD",    range:"READINESS ≥ 80", color:"#4ade80", bg:"rgba(74,222,128,0.08)",  border:"#4ade80",  desc:"Full intensity. Progressive overload. Heavy compounds confirm gate progress." },
   MODERATE: { label:"MODERATE",      range:"READINESS 70–79", color:"#facc15", bg:"rgba(250,204,21,0.08)",  border:"#facc15",  desc:"Sub-maximal effort (80% loads). Builds work capacity but heavy compounds need a HARD day to advance." },
-  DELOAD:   { label:"DELOAD WEEK",   range:"manual / suggested", color:"#fb923c", bg:"rgba(251,146,60,0.08)", border:"#fb923c",  desc:"Deliberate back-off. Loads scaled to 60%. RPE cap 6. Sessions do NOT count toward gate progress." },
+  DELOAD:   { label:"DELOAD WEEK",   range:"manual / suggested", color:"#fb923c", bg:"rgba(251,146,60,0.08)", border:"#fb923c",  desc:"Deliberate back-off. Loads at 85%, sets cut to 50%. RPE cap 6. Sessions do NOT count toward gate progress." },
   RECOVERY: { label:"RECOVERY ONLY", range:"READINESS < 70",  color:"#f87171", bg:"rgba(248,113,113,0.08)", border:"#f87171",  desc:"Zone 2 walk, mobility, McGill Big 3. No loading." },
 };
 
@@ -509,9 +510,11 @@ function ExerciseCard({ ex, exState, mult, tier, painBack, painShoulder, data, o
   const step      = ex.progression[stepIdx];
   const stepCount = ex.progression.length;
   const isFinalStep = stepIdx === stepCount - 1;
-  const rows      = Array.from({ length: step.sets }, (_, i) => i);
+  // During DELOAD, render half the prescribed sets (rounded, min 1).
+  const renderSets = effectiveSets(step.sets, tier);
+  const rows      = Array.from({ length: renderSets }, (_, i) => i);
   const doneCount = rows.filter(i => data[i]?.done).length;
-  const allDone   = doneCount === step.sets;
+  const allDone   = doneCount === renderSets;
   const sessionLogged = !!data.sessionLoggedAt;
   const topRPEInput   = data.topRPE ?? "";
 
@@ -531,9 +534,9 @@ function ExerciseCard({ ex, exState, mult, tier, painBack, painShoulder, data, o
           <span style={{fontSize:12,fontWeight:"bold",letterSpacing:2,color:allDone?"#4ade80":"#c8d4c8",...MONO}}>
             {allDone?"✓ ":""}{ex.name}
           </span>
-          <span style={{fontSize:8,color:"#4a6a4a",letterSpacing:1,...MONO}}>{doneCount}/{step.sets} SETS</span>
+          <span style={{fontSize:8,color:"#4a6a4a",letterSpacing:1,...MONO}}>{doneCount}/{renderSets} SETS</span>
           <span style={{fontSize:9,color:"#4a6a4a",background:"#111a11",padding:"1px 6px",border:"1px solid #1e321e",...MONO}}>
-            {step.sets}×{step.reps} @ {mult<1?scaleLoad(step.load,mult):step.load}
+            {renderSets}×{step.reps} @ {mult<1?scaleLoad(step.load,mult):step.load}
           </span>
           <span style={{fontSize:8,color:gateRes.cleared?"#4ade80":"#facc15",background:"#0a1a0a",padding:"1px 6px",border:`1px solid ${gateRes.cleared?"#2d4a2d":"#3a3a0a"}`,letterSpacing:1,...MONO}}>
             STEP {stepIdx+1}/{stepCount}{step.gate?` · ${gateRes.progress}`:" · MAINT"}
@@ -551,7 +554,7 @@ function ExerciseCard({ ex, exState, mult, tier, painBack, painShoulder, data, o
             </div>
           )}
           {tier === "MODERATE" && <div style={{padding:"4px 12px",fontSize:8,color:"#facc15",borderBottom:"1px solid #0f1f0f",...MONO}}>MODERATE TIER — LOADS SCALED TO 80%</div>}
-          {tier === "DELOAD"   && <div style={{padding:"4px 12px",fontSize:8,color:"#fb923c",borderBottom:"1px solid #0f1f0f",...MONO}}>DELOAD WEEK — LOADS SCALED TO 60% · SESSIONS DO NOT ADVANCE GATES</div>}
+          {tier === "DELOAD"   && <div style={{padding:"4px 12px",fontSize:8,color:"#fb923c",borderBottom:"1px solid #0f1f0f",...MONO}}>DELOAD WEEK — LOADS 85% · SETS CUT TO {Math.round(DELOAD_SET_MULT*100)}% · SESSIONS DO NOT ADVANCE GATES</div>}
           <div style={{display:"grid",gridTemplateColumns:"26px 50px 1fr 85px 1fr 90px",gap:5,padding:"4px 8px 2px",fontSize:7,letterSpacing:2,color:"#2a4a2a",borderBottom:"1px solid #0f1f0f",...MONO}}>
             <span>SET</span><span>REPS</span><span>PRESCRIBED</span><span>ACTUAL LB</span><span>REPS/NOTE</span><span></span>
           </div>
@@ -810,13 +813,14 @@ export default function App() {
     const total = visible.reduce((a, e)=>{
       const st   = getStepState(stepState, e.id);
       const step = e.progression[Math.min(st.stepIdx, e.progression.length-1)];
-      return a + step.sets;
+      return a + effectiveSets(step.sets, tier);
     }, 0);
     const done = visible.reduce((a, e)=>{
       const st   = getStepState(stepState, e.id);
       const step = e.progression[Math.min(st.stepIdx, e.progression.length-1)];
       const ed   = (sessionData[dk]||{})[e.id]||{};
-      return a + Array.from({length:step.sets},(_,i)=>i).filter(i=>ed[i]?.done).length;
+      const setCount = effectiveSets(step.sets, tier);
+      return a + Array.from({length:setCount},(_,i)=>i).filter(i=>ed[i]?.done).length;
     }, 0);
     return {done, total};
   }
@@ -913,7 +917,7 @@ export default function App() {
             ⌖ DELOADING — {activeDeload.daysRemaining} day{activeDeload.daysRemaining===1?"":"s"} remaining · sessions do NOT count toward gates
             {tier === "RECOVERY"
               ? " · RECOVERY OVERRIDE — readiness <70, no loading today"
-              : " · loads at 60%"}
+              : " · loads at 85%, sets cut to 50%"}
           </span>
           <button onClick={()=>setDeloadState(prev=>endDeload(prev, todayISO()))}
             style={{background:"transparent",border:"1px solid #fb923c",color:"#fb923c",padding:"2px 8px",cursor:"pointer",fontSize:8,letterSpacing:2,...MONO}}>
@@ -1027,7 +1031,7 @@ export default function App() {
                     ▼ START DELOAD WEEK
                   </button>
                   <span style={{fontSize:8,color:"#7a7a4a",letterSpacing:1,...MONO}}>
-                    {DELOAD_DURATION_DAYS} days · loads at {Math.round(DELOAD_LOAD_MULT*100)}% · RPE cap 6 · sessions do NOT count toward gates
+                    {DELOAD_DURATION_DAYS} days · loads at {Math.round(DELOAD_LOAD_MULT*100)}% · sets cut to {Math.round(DELOAD_SET_MULT*100)}% · RPE cap 6 · sessions do NOT count toward gates
                     {weeksSinceDeload !== null ? ` · ${weeksSinceDeload}w since last break` : ""}
                   </span>
                 </>
@@ -1129,7 +1133,7 @@ export default function App() {
                 <span style={{color:"#4a6a4a",fontSize:9}}>—</span>
                 <span style={{color:"#9aba9a",fontSize:9}}>
                   {tier==="RECOVERY"?"NO LOADING. ZONE 2 + MOBILITY ONLY.":
-                   tier==="DELOAD"  ?"60% LOADS · RPE CAP 6 · SESSIONS DON'T COUNT":
+                   tier==="DELOAD"  ?"85% LOADS · 50% SETS · RPE CAP 6 · SESSIONS DON'T COUNT":
                    tier==="MODERATE"?"80% LOADS — RPE TARGETS STILL APPLY":
                                      "FULL PROGRAM — HIT YOUR NUMBERS"}
                 </span>
@@ -1206,7 +1210,7 @@ export default function App() {
 
                 {/* Tier warning */}
                 {tier==="MODERATE"&&<div style={{fontSize:8,color:"#facc15",letterSpacing:1,marginBottom:8,padding:"5px 9px",background:"rgba(250,204,21,0.05)",border:"1px solid rgba(250,204,21,0.15)"}}>⚠ MODERATE DAY — ALL LOADS AT 80%. RPE TARGETS STILL APPLY. DO NOT GRIND.</div>}
-                {tier==="DELOAD"&&<div style={{fontSize:8,color:"#fb923c",letterSpacing:1,marginBottom:8,padding:"5px 9px",background:"rgba(251,146,60,0.05)",border:"1px solid rgba(251,146,60,0.15)"}}>⌖ DELOAD WEEK — LOADS AT 60%. RPE CAP 6. SESSIONS DO NOT ADVANCE GATES.</div>}
+                {tier==="DELOAD"&&<div style={{fontSize:8,color:"#fb923c",letterSpacing:1,marginBottom:8,padding:"5px 9px",background:"rgba(251,146,60,0.05)",border:"1px solid rgba(251,146,60,0.15)"}}>⌖ DELOAD WEEK — LOADS AT 85%. SETS CUT TO 50%. RPE CAP 6. SESSIONS DO NOT ADVANCE GATES.</div>}
                 {tier==="RECOVERY"&&<div style={{fontSize:8,color:"#f87171",letterSpacing:1,marginBottom:8,padding:"5px 9px",background:"rgba(248,113,113,0.05)",border:"1px solid rgba(248,113,113,0.15)"}}>✕ RECOVERY DAY — NO LOADING. ZONE 2 CARDIO AND MCGILL BIG 3 ONLY.</div>}
 
                 {/* Exercises — visible (unlocked) */}
