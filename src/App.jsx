@@ -505,6 +505,7 @@ function SetRow({ setNum, reps, load, rpe, mult, actual, onChange }) {
 // ─────────────────────────────────────────────────────────────────────────────
 function ExerciseCard({ ex, exState, mult, tier, painBack, painShoulder, data, onSetUpdate, onMetaUpdate, onLogSession, onAdvanceStep }) {
   const [open, setOpen] = useState(true);
+  const [confirmSkip, setConfirmSkip] = useState(false);
   const stepIdx   = Math.min(exState.stepIdx, ex.progression.length - 1);
   const step      = ex.progression[stepIdx];
   const stepCount = ex.progression.length;
@@ -595,6 +596,35 @@ function ExerciseCard({ ex, exState, mult, tier, painBack, painShoulder, data, o
               <span style={{fontSize:9,color:"#4ade80",letterSpacing:1,...MONO}}>✓ GATE CLEARED — READY FOR STEP {stepIdx+2}/{stepCount}</span>
               <button onClick={onAdvanceStep} style={{background:"#1a2e1a",border:"1px solid #4ade80",color:"#4ade80",padding:"5px 14px",cursor:"pointer",fontSize:8,letterSpacing:3,...MONO}}>ADVANCE STEP →</button>
             </div>
+          )}
+          {!isFinalStep && !showAdvance && (
+            confirmSkip ? (
+              <div style={{padding:"10px 12px",borderTop:"1px solid #3a3a0a",background:"rgba(250,204,21,0.05)",...MONO}}>
+                <div style={{fontSize:9,color:"#facc15",letterSpacing:2,marginBottom:6}}>
+                  SKIP GATE — JUMP TO STEP {stepIdx+2}/{stepCount}?
+                </div>
+                <div style={{fontSize:8,color:"#9a9a6a",letterSpacing:1,marginBottom:8}}>
+                  Bypasses this gate ({step.gate?gateRes.progress:"maintenance"}) without clearing the criteria and advances your saved progress to {ex.progression[stepIdx+1].sets}×{ex.progression[stepIdx+1].reps} {ex.progression[stepIdx+1].load}. Logged history stays on this step.
+                </div>
+                <div style={{display:"flex",gap:8}}>
+                  <button onClick={()=>{ onAdvanceStep(); setConfirmSkip(false); }}
+                    style={{background:"#2e2a0a",border:"1px solid #facc15",color:"#facc15",padding:"5px 14px",cursor:"pointer",fontSize:8,letterSpacing:3,...MONO}}>
+                    ⏭ CONFIRM SKIP
+                  </button>
+                  <button onClick={()=>setConfirmSkip(false)}
+                    style={{background:"transparent",border:"1px solid #2d4a2d",color:"#4a6a4a",padding:"5px 14px",cursor:"pointer",fontSize:8,letterSpacing:3,...MONO}}>
+                    CANCEL
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div style={{padding:"6px 12px",borderTop:"1px solid #1a2a1a",display:"flex",justifyContent:"flex-end"}}>
+                <button onClick={()=>setConfirmSkip(true)}
+                  style={{background:"transparent",border:"1px solid #3a3a0a",color:"#7a7a4a",padding:"4px 12px",cursor:"pointer",fontSize:8,letterSpacing:2,...MONO}}>
+                  ⏭ SKIP GATE — ADVANCE TO STEP {stepIdx+2}/{stepCount}
+                </button>
+              </div>
+            )
           )}
           {isFinalStep && gateRes.cleared && (
             <div style={{padding:"8px 12px",borderTop:"1px solid #2d4a2d",background:"rgba(250,204,21,0.05)",fontSize:9,color:"#facc15",letterSpacing:1,...MONO}}>
