@@ -105,6 +105,19 @@ const PROGRAM = {
         ],
       },
       {
+        id:"ssb_free_sq", block:"C", replaces:"ssb_squat", name:"SSB FREE SQUAT",
+        cue:"No box — control descent, hip crease at or below knee, brace before each rep. Rebuild from a lighter load — free squat is harder than box at the same weight.",
+        progression: [
+          S(3,5,"235 lb",235,"RPE 6 — pattern",       G.rpePain(6, 2, 3)),
+          S(3,5,"255 lb",255,"RPE 6–7",               G.rpePain(6.5, 2, 3)),
+          S(4,5,"275 lb",275,"RPE 7",                 G.rpePain(7, 2, 3)),
+          S(4,5,"295 lb",295,"RPE 7",                 G.rpePain(7, 2, 3)),
+          S(4,5,"315 lb",315,"RPE 7–8",               G.rpePain(7.5, 2, 3)),
+          S(5,3,"335 lb",335,"RPE 8 — HARD only",     G.rpePain(8, 2, 3)),
+          S(5,3,"355 lb",355,"RPE 8 — HARD only",     G.weeks(4, 2)),  // → Block D transition contributor
+        ],
+      },
+      {
         id:"db_bench_mon", block:"A", name:"DB BENCH PRESS",
         cue:"Retract scapula, controlled descent, 90s rest between sets",
         progression: [

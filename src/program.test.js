@@ -304,6 +304,17 @@ test("locked: shows only the next block", () => {
   assert.deepEqual(getLockedPreview(sampleDay, "C").map(e=>e.id), []);
 });
 
+test("visible: three-block replaces chain (A → B → C) hides both ancestors in C", () => {
+  const day = [
+    { id:"goblet_sq",   block:"A" },
+    { id:"ssb_squat",   block:"B", replaces:"goblet_sq" },
+    { id:"ssb_free_sq", block:"C", replaces:"ssb_squat" },
+  ];
+  assert.deepEqual(getVisibleExercises(day, "A").map(e=>e.id), ["goblet_sq"]);
+  assert.deepEqual(getVisibleExercises(day, "B").map(e=>e.id), ["ssb_squat"]);
+  assert.deepEqual(getVisibleExercises(day, "C").map(e=>e.id), ["ssb_free_sq"]);
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // isBlockTransitionReady
 // ─────────────────────────────────────────────────────────────────────────────
